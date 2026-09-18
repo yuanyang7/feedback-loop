@@ -91,13 +91,13 @@ export async function runIntake(loaded: LoadedConfig, opts: IntakeOptions): Prom
 
     // An explicit @-mention is a human asking directly; it does not need to clear
     // the confidence floor the way passively-observed chat does.
-    if (!report.directed && decision.confidence < config.intake.minConfidence) {
-      skipped += 1;
-      info(`${label} ${dim("below confidence floor —")} ${dim(decision.reasoning)}`);
-      if (!opts.dryRun) {
-        await setState(discord, config.discord.channelId, anchor.id, "unclear");
-      }
-      continue;
+    //
+    // Below the floor we still file, tagged needs-info. Dropping it would lose a
+    // real report silently whenever nobody circles back, which is the same
+    // failure as a wrong duplicate — and closing a thin issue is ten seconds.
+    const lowConfidence = !report.directed && decision.confidence < config.intake.minConfidence;
+    if (lowConfidence) {
+      info(`${label} ${yellow("below confidence floor")} ${dim("— filing as needs-info")}`);
     }
 
     let related: Issue | undefined;
@@ -132,10 +132,12 @@ export async function runIntake(loaded: LoadedConfig, opts: IntakeOptions): Prom
       channelId: config.discord.channelId,
       channelName,
       related,
+      lowConfidence: lowConfidence ? decision.reasoning : undefined,
     });
     const title = `${config.github.titlePrefix}${config.github.titlePrefix ? " " : ""}${decision.title}`;
     const labels = [
       config.github.labels.source,
+      ...(lowConfidence ? [config.github.labels.needsInfo] : []),
       `severity:${decision.severity}`,
       `size:${decision.sizeHint}`,
       decision.kind === "feature" ? "enhancement" : "bug",
@@ -150,7 +152,9 @@ export async function runIntake(loaded: LoadedConfig, opts: IntakeOptions): Prom
     const number = await github.createIssue({ title, body, labels });
     filed += 1;
     info(`${label} ${bold(`filed #${number}`)} ${decision.title}`);
-    await setState(discord, config.discord.channelId, anchor.id, "logged");
+    // Keep the question mark on a thin report: it is filed, but the reporter is
+    // the only one who can make it actionable.
+    await setState(discord, config.discord.channelId, anchor.id, lowConfidence ? "unclear" : "logged");
   }
 
   const newest = messages.at(-1)!.id;
@@ -175,6 +179,8 @@ export function issueBody(
     channelId: string;
     channelName: string;
     related?: Issue;
+    /** Present when the report was filed despite not clearing the floor. */
+    lowConfidence?: string;
   },
 ): string {
   const quoted = renderReport(report)
@@ -194,6 +200,16 @@ export function issueBody(
     `> **Reported by \`${report.authorName}\` in ${source.channelName}** — ${links}`,
     "",
     decision.body,
+    ...(source.lowConfidence
+      ? [
+          "",
+          "> [!WARNING]",
+          "> **Filed with low confidence — this report may not be actionable as written.**",
+          `> ${source.lowConfidence}`,
+          ">",
+          "> Filed anyway so it is not lost. Ask the reporter for specifics, or close it.",
+        ]
+      : []),
     ...(source.related
       ? [
           "",

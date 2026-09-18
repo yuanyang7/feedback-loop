@@ -46,6 +46,7 @@ export const ConfigSchema = z.object({
         source: z.string().default("from-discord"),
         agentReady: z.string().default("agent-ready"),
         needsDecision: z.string().default("needs-decision"),
+        needsInfo: z.string().default("needs-info"),
       })
       .prefault({}),
   }),

@@ -181,6 +181,7 @@ async function pickIssue(
   const rank = (i: Issue): number => {
     const names = i.labels.map((l) => l.name);
     if (names.includes("needs-decision") || names.includes("in-progress")) return -1;
+    if (names.includes("needs-info")) return -1; // nobody can reproduce a report this thin
     if (names.includes("severity:high")) return 3;
     if (names.includes("severity:medium")) return 2;
     return 1;

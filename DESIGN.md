@@ -43,8 +43,10 @@ fetch messages since cursor          (Discord REST)
 
 Two things make this survivable:
 
-- **Confidence floor.** Below the threshold, intake files nothing and reacts `❓` instead. A missed
-  report costs one re-ask; a stream of junk issues costs trust in the whole system.
+- **Confidence floor.** Below the threshold, intake still files, but labels the issue `needs-info`
+  and reacts `❓`. Dropping it would lose a real report silently whenever nobody circles back —
+  the same failure mode as a wrong duplicate, and the costs are equally asymmetric. `needs-info`
+  issues are never picked up by the worker.
 - **Dedupe before create.** Open `from-discord` issue titles + bodies go into the classification
   call. Five people reporting one bug is one issue with five links, not five issues.
 
@@ -65,7 +67,7 @@ state reaction on each source message (removing the previous one).
 |---|---|---|
 | 📝 | logged as an issue | intake |
 | 🔁 | duplicate of an existing issue | intake |
-| ❓ | unclear — needs a human to restate it | intake |
+| ❓ | filed, but too thin to act on — needs the reporter | intake |
 | 🔧 | a worker run is in progress | worker |
 | ✅ | PR open and ready for your review | worker |
 | 🤔 | escalated — needs a decision, no PR | worker |

@@ -60,6 +60,9 @@ async function deriveState(github: GitHubClient, issue: Issue): Promise<State> {
     return issue.stateReason === "not_planned" ? "dropped" : "merged";
   }
   if (labels.has("needs-decision")) return "needsDecision";
+  // Filed, but the reporter is still the only one who can make it actionable —
+  // so the question mark has to survive a reconcile pass.
+  if (labels.has("needs-info")) return "unclear";
 
   const pr = await github.linkedPullRequest(issue.number);
   if (pr?.state === "MERGED") return "merged";

@@ -101,8 +101,10 @@ Schedule `tick` however you like — launchd, cron, a loop. It is idempotent and
 
 Intake groups consecutive messages from one author into a single report, classifies each as
 bug / feature / question / noise, checks it against every open issue for duplicates, and files
-only what clears a confidence floor. Below the floor it reacts ❓ instead of guessing: a missed
-report costs one re-ask, while a stream of junk issues costs trust in the whole system.
+and files them. A report that clears the confidence floor is filed normally; one that does not is
+still filed, labelled `needs-info` and marked ❓, because dropping it would lose a real report
+silently whenever nobody circles back — the same failure as a wrong duplicate. Closing a thin issue
+is ten seconds.
 
 An explicit @-mention skips the floor. A human asking you directly is not a guess.
 
@@ -114,7 +116,7 @@ One reaction per source message, so the channel shows where every report got to.
 |---|---|
 | 📝 | logged as an issue |
 | 🔁 | duplicate of an existing issue |
-| ❓ | unclear — needs a human to restate it |
+| ❓ | filed, but too thin to act on — ask the reporter for specifics |
 | 🔧 | a worker run is in progress |
 | ✅ | PR open and ready for your review |
 | 🤔 | escalated — needs a decision, no PR |
