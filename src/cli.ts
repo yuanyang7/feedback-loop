@@ -28,13 +28,14 @@ Options:
   --dry-run        Classify and print; create nothing, react to nothing
   --backfill N     On a fresh cursor, process the last N messages (default: skip history)
   --issue N        triage/fix: act on this issue instead of picking one
+  --announce ID    triage/fix: post the result to this Discord channel when done
 `;
 
 async function main(): Promise<number> {
   const argv = process.argv.slice(2);
   const command = argv[0];
   const flags = new Set(argv.filter((a) => a.startsWith("--")));
-  const valueFlags = new Set(["--backfill", "--issue"]);
+  const valueFlags = new Set(["--backfill", "--issue", "--announce"]);
   const positional = argv.slice(1).filter((a, i) => {
     if (a.startsWith("--")) return false;
     const previous = argv.slice(1)[i - 1];
@@ -66,12 +67,20 @@ async function main(): Promise<number> {
     case "triage": {
       const issueIndex = argv.indexOf("--issue");
       const issueNumber = issueIndex >= 0 ? Number(argv[issueIndex + 1]) : undefined;
-      await runTriage(loadConfig(dir), { dryRun, issueNumber });
+      const a = argv.indexOf("--announce");
+      await runTriage(loadConfig(dir), {
+        dryRun, issueNumber, announceChannel: a >= 0 ? argv[a + 1] : undefined,
+      });
       return 0;
     }
     case "fix": {
       const i = argv.indexOf("--issue");
-      await runFix(loadConfig(dir), { dryRun, issueNumber: i >= 0 ? Number(argv[i + 1]) : undefined });
+      const a = argv.indexOf("--announce");
+      await runFix(loadConfig(dir), {
+        dryRun,
+        issueNumber: i >= 0 ? Number(argv[i + 1]) : undefined,
+        announceChannel: a >= 0 ? argv[a + 1] : undefined,
+      });
       return 0;
     }
     case "status":

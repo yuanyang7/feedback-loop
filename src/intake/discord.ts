@@ -61,6 +61,16 @@ export class DiscordClient {
     return channel.name ? `#${channel.name}` : "Discord";
   }
 
+  async sendMessage(channelId: string, content: string, replyToId?: string): Promise<void> {
+    await this.request<unknown>(`/channels/${channelId}/messages`, {
+      method: "POST",
+      body: JSON.stringify({
+        content: content.slice(0, 1900),
+        ...(replyToId ? { message_reference: { message_id: replyToId, fail_if_not_exists: false } } : {}),
+      }),
+    });
+  }
+
   async addReaction(channelId: string, messageId: string, emoji: string): Promise<void> {
     await this.request<void>(
       `/channels/${channelId}/messages/${messageId}/reactions/${encodeURIComponent(emoji)}/@me`,

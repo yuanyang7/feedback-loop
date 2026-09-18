@@ -1,13 +1,16 @@
 import { readSecret, type LoadedConfig } from "../core/config.js";
-import { bold, cyan, dim, info, yellow } from "../core/log.js";
+import { bold, cyan, dim, info, warn, yellow } from "../core/log.js";
 import { makeClassifier } from "../core/llm.js";
 import { appendRunLog, readIntakeState, writeIntakeState } from "../core/state.js";
 import { classifyReports, type Decision } from "./classify.js";
-import { DiscordClient, messageUrl } from "./discord.js";
+import { DiscordClient, messageUrl, type DiscordMessage } from "./discord.js";
 import { setState } from "./emoji.js";
 import { encodeFooter } from "./footer.js";
 import { GitHubClient, type Issue } from "./github.js";
 import { groupMessages, renderReport, type Report } from "./group.js";
+import {
+  activeRun, claimRun, describeRejection, HELP, isOperator, parseCommand, startWorker,
+} from "./commands.js";
 
 export interface IntakeOptions {
   /** Classify and print, but create nothing and react to nothing. */
@@ -54,7 +57,12 @@ export async function runIntake(loaded: LoadedConfig, opts: IntakeOptions): Prom
     return;
   }
 
-  const reports = groupMessages(messages, {
+  // Commands are pulled out before classification: they are instructions to the
+  // tool, not reports about the product, and filing them as issues would be
+  // both wrong and expensive.
+  const remaining = await handleCommands(loaded, discord, messages, opts.dryRun);
+
+  const reports = groupMessages(remaining, {
     windowSeconds: config.intake.groupWindowSeconds,
     ignoreAuthorIds: config.discord.ignoreAuthorIds,
     mentionTriggerIds: config.discord.mentionTriggerIds,
@@ -171,7 +179,95 @@ export async function runIntake(loaded: LoadedConfig, opts: IntakeOptions): Prom
   info(`${bold("done")} — ${filed} filed, ${duplicates} duplicate, ${skipped} skipped.`);
 }
 
-export function issueBody(
+export /**
+ * Returns the messages that are not commands. A command from someone not on the
+ * operator list is answered, not silently dropped — saying no out loud is how
+ * people learn the boundary exists.
+ */
+async function handleCommands(
+  loaded: LoadedConfig,
+  discord: DiscordClient,
+  messages: DiscordMessage[],
+  dryRun: boolean,
+): Promise<DiscordMessage[]> {
+  const { config, repoPath } = loaded;
+  const botIds = config.discord.mentionTriggerIds;
+  const channel = config.discord.channelId;
+  const remaining: DiscordMessage[] = [];
+
+  for (const message of messages) {
+    const command = parseCommand(message, botIds);
+    if (!command) {
+      remaining.push(message);
+      continue;
+    }
+
+    const reply = async (text: string): Promise<void> => {
+      info(`  ${dim("->")} ${text.split("\n")[0]}`);
+      if (!dryRun) await discord.sendMessage(channel, text, message.id).catch(() => undefined);
+    };
+
+    if (!isOperator(message, config.discord.operatorIds)) {
+      warn(`command "${command.kind}" from non-operator ${message.author.username} — refused`);
+      await reply(`Sorry ${message.author.username}, you're not on the operator list for this repo.`);
+      continue;
+    }
+
+    if (command.kind === "help") {
+      await reply(HELP);
+      continue;
+    }
+    if (command.kind === "status") {
+      await reply(await statusLine(loaded));
+      continue;
+    }
+
+    const running = activeRun(config.target.name);
+    if (running) {
+      await reply(describeRejection(command, `\`${running.what}\` is already running (started ${running.at.slice(11, 16)} UTC).`));
+      continue;
+    }
+
+    if (dryRun) {
+      await reply(`[dry-run] would start \`${command.kind} #${command.issue}\``);
+      continue;
+    }
+
+    const { pid, logPath } = startWorker(config.target.name, repoPath, command, channel);
+    claimRun(config.target.name, pid, `${command.kind} #${command.issue}`);
+    info(`  ${bold(`started ${command.kind} #${command.issue}`)} ${dim(`pid ${pid}`)}`);
+    await reply(
+      `Starting \`${command.kind}\` on #${command.issue}. This takes ten minutes or more — I'll reply when it's done.\n` +
+        `<sub>${logPath}</sub>`,
+    );
+  }
+  return remaining;
+}
+
+async function statusLine(loaded: LoadedConfig): Promise<string> {
+  const github = new GitHubClient(
+    loaded.config.target.repo,
+    loaded.config.github.tokenFile ? readSecret(loaded.config.github.tokenFile, "GITHUB_TOKEN") : undefined,
+  );
+  const labels = loaded.config.github.labels;
+  const [ready, readyToFix, blocked, prs] = await Promise.all([
+    github.listIssues({ labels: [labels.agentReady], state: "open" }),
+    github.listIssues({ labels: [labels.readyToFix], state: "open" }),
+    github.listIssues({ labels: [labels.needsDecision], state: "open" }),
+    github.listPullRequests({ state: "open" }),
+  ]);
+  const agentPrs = prs.filter((p) => (p.labels ?? []).some((l) => l.name === labels.agentPr));
+  const running = activeRun(loaded.config.target.name);
+  return [
+    running ? `🔧 running: \`${running.what}\`` : "💤 nothing running",
+    `**${ready.length}** agent-ready · **${readyToFix.length}** ready-to-fix · **${blocked.length}** need you`,
+    agentPrs.length > 0
+      ? `Open PRs: ${agentPrs.map((p) => `[#${p.number}](${p.url})`).join(", ")}`
+      : "No open agent PRs.",
+  ].join("\n");
+}
+
+function issueBody(
   decision: Decision,
   report: Report,
   source: {

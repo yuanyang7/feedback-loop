@@ -35,6 +35,13 @@ export const ConfigSchema = z.object({
     ignoreAuthorIds: z.array(z.string()).default([]),
     /** Mentioning one of these bypasses the confidence floor. */
     mentionTriggerIds: z.array(z.string()).default([]),
+    /**
+     * Discord user ids allowed to start worker runs from chat. Deliberately
+     * separate from every other list here: this one authorises spending money
+     * and running code on the machine, so it is opt-in and names people, not
+     * roles. Empty means chat cannot start anything.
+     */
+    operatorIds: z.array(z.string()).default([]),
   }),
   github: z.object({
     /** File holding a GitHub token. Falls back to the ambient `gh` login. */

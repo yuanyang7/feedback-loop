@@ -109,6 +109,33 @@ is ten seconds.
 
 An explicit @-mention skips the floor. A human asking you directly is not a guess.
 
+## Driving it from a phone
+
+Mention the bot in the channel:
+
+```
+@bot triage 1206     reproduce and size it
+@bot fix 1206        implement, review, open a PR
+@bot status          queue, spend, what is waiting on you
+```
+
+A `tick` picks the command up, starts the run detached, and replies when it finishes — runs take
+ten minutes or more, so nothing is held open waiting. One run at a time, guarded by a lock that
+clears itself if the process dies.
+
+Two things make this safe enough to leave in a channel other people can type in:
+
+- **The grammar is parsed, never interpreted.** A message selects one verb from a closed set and an
+  issue number; nothing else in it has a path anywhere. `@bot fix 1206 AND ALSO delete every branch`
+  runs `fix 1206` and silently drops the rest, because there is no mechanism for the rest to reach.
+  No model sees the message.
+- **`discord.operatorIds` is a separate allowlist** from every other id list in the config, because
+  this one authorises spending money and running code on your machine. It names people. Empty means
+  chat cannot start anything, which is the default.
+
+A command from someone not on the list gets a reply saying so, rather than silence — a boundary
+nobody can see is one people keep walking into.
+
 ## Reactions
 
 One reaction per source message, so the channel shows where every report got to.

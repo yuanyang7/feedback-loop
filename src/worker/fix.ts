@@ -21,6 +21,7 @@ import { checkGate } from "./gate.js";
 import { runPhase } from "./agent.js";
 import { ensureWorktree, slugForIssue, type Worktree } from "./worktree.js";
 import { evidenceDir, evidenceInstruction, listEvidence, sweepWorktree } from "./evidence.js";
+import { announce } from "./announce.js";
 
 const exec = promisify(execFile);
 
@@ -111,7 +112,7 @@ Risks flagged by the author: ${fix.risks}
 
 export async function runFix(
   loaded: LoadedConfig,
-  opts: { issueNumber?: number; dryRun: boolean },
+  opts: { issueNumber?: number; dryRun: boolean; announceChannel?: string },
 ): Promise<void> {
   // in-progress is claimed early and has to come off however the run ends.
   // Without this, a crash leaves an issue asserting that work is underway
@@ -147,7 +148,7 @@ function githubFor(loaded: LoadedConfig): GitHubClient {
 
 async function runFixInner(
   loaded: LoadedConfig,
-  opts: { issueNumber?: number; dryRun: boolean },
+  opts: { issueNumber?: number; dryRun: boolean; announceChannel?: string },
   onClaim: (issue: Issue) => void,
 ): Promise<Issue | null> {
   const { config, repoPath, playbookPath } = loaded;
@@ -259,19 +260,19 @@ async function runFixInner(
         return null;
       }
       warn(`  fix phase failed: ${fixRun.failure}`);
-      await escalate(github, loaded, issue, `The fix phase did not complete.\n\n\`\`\`\n${fixRun.failure}\n\`\`\``);
+      await escalate(github, loaded, issue, `The fix phase did not complete.\n\n\`\`\`\n${fixRun.failure}\n\`\`\``, opts.announceChannel);
       log(target, issue, "fix phase failed", spent, artifactDir);
       return null;
     }
     if (fix.blockedReason !== "none") {
       warn(`  blocked: ${fix.blockedReason}`);
-      await escalate(github, loaded, issue, blockedComment(fix));
+      await escalate(github, loaded, issue, blockedComment(fix), opts.announceChannel);
       log(target, issue, `blocked: ${fix.blockedReason}`, spent, artifactDir);
       return null;
     }
     if (!fix.implemented || !(await hasCommits(worktree, config.target.baseBranch))) {
       warn("  reported success but committed nothing");
-      await escalate(github, loaded, issue, "The fix phase reported success but committed nothing.");
+      await escalate(github, loaded, issue, "The fix phase reported success but committed nothing.", opts.announceChannel);
       log(target, issue, "no commits", spent, artifactDir);
       return null;
     }
@@ -301,12 +302,9 @@ async function runFixInner(
     review = review ?? null;
 
     if (attempt === config.worker.maxFixAttempts) {
-      await escalate(
-        github,
-        loaded,
-        issue,
-        `Review rejected ${config.worker.maxFixAttempts} attempts. Escalating rather than grinding.\n\n` +
+      await escalate(github, loaded, issue, `Review rejected ${config.worker.maxFixAttempts} attempts. Escalating rather than grinding.\n\n` +
           findings.map((f) => `- ${f}`).join("\n"),
+        opts.announceChannel,
       );
       log(target, issue, "review rejected", spent, artifactDir);
       return null;
@@ -317,6 +315,7 @@ async function runFixInner(
 
   const prUrl = await openPullRequest(github, config, worktree, issue, fix, review, triageNotes, spent, artifactDir, listEvidence(evidence));
   info(`  ${green("PR open")} ${prUrl}`);
+  await announce(loaded, opts.announceChannel, `✅ PR open for #${issue.number} — $${spent.toFixed(2)}. Waiting on you.\n${prUrl}`);
   await github.removeLabels(issue.number, ["in-progress", config.github.labels.readyToFix]);
   await react(loaded, issue, "prReady");
   log(target, issue, `PR opened: ${prUrl}`, spent, artifactDir);
@@ -404,7 +403,9 @@ async function escalate(
   loaded: LoadedConfig,
   issue: Issue,
   comment: string,
+  announceChannel?: string,
 ): Promise<void> {
+  await announce(loaded, announceChannel, `🤔 Stopped on #${issue.number}. Needs you.\n${issue.url}`);
   await github.commentOnIssue(issue.number, comment);
   await github.addLabels(issue.number, [loaded.config.github.labels.needsDecision]);
   await github.removeLabels(issue.number, ["in-progress", loaded.config.github.labels.readyToFix]);

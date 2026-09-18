@@ -19,6 +19,7 @@ import { checkGate } from "./gate.js";
 import { runPhase } from "./agent.js";
 import { ensureWorktree, isUntouched, removeWorktree, slugForIssue } from "./worktree.js";
 import { evidenceDir, evidenceInstruction, listEvidence, sweepWorktree } from "./evidence.js";
+import { announce } from "./announce.js";
 
 const VerdictSchema = z.object({
   evidenceKind: z
@@ -88,7 +89,7 @@ ${issue.body}
 
 export async function runTriage(
   loaded: LoadedConfig,
-  opts: { issueNumber?: number; dryRun: boolean },
+  opts: { issueNumber?: number; dryRun: boolean; announceChannel?: string },
 ): Promise<void> {
   const { config, repoPath, playbookPath } = loaded;
   const target = config.target.name;
@@ -180,6 +181,13 @@ export async function runTriage(
     warn(`  claimed a reproduction on ${verdict.evidenceKind} evidence — treating it as not reproduced`);
   }
   const safeToFix = verdict?.reproduced === true && grounded && verdict.blockedReason === "none";
+  await announce(
+    loaded,
+    opts.announceChannel,
+    safeToFix
+      ? `✅ Triage done on #${issue.number} — **reproduced** (size \`${verdict!.size}\`). Ready for \`fix ${issue.number}\`.\n${issue.url}`
+      : `🤔 Triage done on #${issue.number} — **${verdict?.blockedReason ?? "did not complete"}**. Needs you.\n${issue.url}`,
+  );
   if (safeToFix) {
     info(`  ${green("reproduced")} — size ${verdict.size}; ready for a fix attempt`);
     await react(loaded, issue, "working");
