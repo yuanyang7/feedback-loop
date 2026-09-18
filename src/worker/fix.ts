@@ -107,6 +107,43 @@ export async function runFix(
   loaded: LoadedConfig,
   opts: { issueNumber?: number; dryRun: boolean },
 ): Promise<void> {
+  // in-progress is claimed early and has to come off however the run ends.
+  // Without this, a crash leaves an issue asserting that work is underway
+  // when nothing is, and the next run skips it.
+  let claimed: Issue | null = null;
+  try {
+    claimed = await runFixInner(loaded, opts, (issue) => {
+      claimed = issue;
+    });
+  } catch (error) {
+    if (claimed) {
+      const github = githubFor(loaded);
+      await github
+        .commentOnIssue(
+          claimed.number,
+          `### ⚠️ The fix run crashed\n\n\`\`\`\n${error instanceof Error ? error.message : String(error)}\n\`\`\`\n\nNo changes were pushed. The issue is back in the queue.`,
+        )
+        .catch(() => undefined);
+      await github.removeLabels(claimed.number, ["in-progress"]).catch(() => undefined);
+    }
+    throw error;
+  }
+}
+
+function githubFor(loaded: LoadedConfig): GitHubClient {
+  return new GitHubClient(
+    loaded.config.target.repo,
+    loaded.config.github.tokenFile
+      ? readSecret(loaded.config.github.tokenFile, "GITHUB_TOKEN")
+      : undefined,
+  );
+}
+
+async function runFixInner(
+  loaded: LoadedConfig,
+  opts: { issueNumber?: number; dryRun: boolean },
+  onClaim: (issue: Issue) => void,
+): Promise<Issue | null> {
   const { config, repoPath, playbookPath } = loaded;
   const target = config.target.name;
   const labels = config.github.labels;
@@ -119,7 +156,7 @@ export async function runFix(
   const gate = await checkGate(config, github);
   if (!gate.ok) {
     warn(`gate closed — ${gate.reason}`);
-    return;
+    return null;
   }
 
   const issue = await pickIssue(github, labels.readyToFix, opts.issueNumber);
@@ -127,13 +164,13 @@ export async function runFix(
     if (opts.issueNumber === undefined) {
       info(`Nothing labelled ${cyan(labels.readyToFix)} to fix. Run triage first.`);
     }
-    return;
+    return null;
   }
   info(`${bold(`#${issue.number}`)} ${issue.title}`);
 
   if (!playbookPath) {
     warn("No .feedback-loop/playbook.md — refusing to run an agent in this repo without one.");
-    return;
+    return null;
   }
   const { readFileSync } = await import("node:fs");
   const playbook = readFileSync(playbookPath, "utf8");
@@ -144,7 +181,7 @@ export async function runFix(
   if (opts.dryRun) {
     console.log(`\n${dim("[dry-run] would run the fix phase with this prompt:")}\n`);
     console.log(FIX_PROMPT(issue, triageNotes, config.worker.denyPaths, []));
-    return;
+    return null;
   }
 
   const slug = slugForIssue(issue.number, issue.title);
@@ -156,6 +193,7 @@ export async function runFix(
     warn("  worktree has no node_modules — triage's setup is gone; the fix session will have to redo it");
   }
   await github.addLabels(issue.number, ["in-progress"]);
+  onClaim(issue);
   await react(loaded, issue, "working");
 
   const phaseOpts = {
@@ -190,15 +228,18 @@ export async function runFix(
 
     if (!fix) {
       await escalate(github, loaded, issue, `The fix phase did not complete.\n\n\`\`\`\n${fixRun.failure}\n\`\`\``);
-      return log(target, issue, "fix phase failed", spent, artifactDir);
+      log(target, issue, "fix phase failed", spent, artifactDir);
+      return null;
     }
     if (fix.blockedReason !== "none") {
       await escalate(github, loaded, issue, blockedComment(fix));
-      return log(target, issue, `blocked: ${fix.blockedReason}`, spent, artifactDir);
+      log(target, issue, `blocked: ${fix.blockedReason}`, spent, artifactDir);
+      return null;
     }
     if (!fix.implemented || !(await hasCommits(worktree, config.target.baseBranch))) {
       await escalate(github, loaded, issue, "The fix phase reported success but committed nothing.");
-      return log(target, issue, "no commits", spent, artifactDir);
+      log(target, issue, "no commits", spent, artifactDir);
+      return null;
     }
 
     const reviewRun = await runPhase(
@@ -232,17 +273,19 @@ export async function runFix(
         `Review rejected ${config.worker.maxFixAttempts} attempts. Escalating rather than grinding.\n\n` +
           findings.map((f) => `- ${f}`).join("\n"),
       );
-      return log(target, issue, "review rejected", spent, artifactDir);
+      log(target, issue, "review rejected", spent, artifactDir);
+      return null;
     }
   }
 
-  if (!fix || !review) return;
+  if (!fix || !review) return null;
 
   const prUrl = await openPullRequest(github, config, worktree, issue, fix, review, triageNotes, spent);
   info(`  ${green("PR open")} ${prUrl}`);
   await github.removeLabels(issue.number, ["in-progress", config.github.labels.readyToFix]);
   await react(loaded, issue, "prReady");
   log(target, issue, `PR opened: ${prUrl}`, spent, artifactDir);
+  return null;
 }
 
 async function openPullRequest(

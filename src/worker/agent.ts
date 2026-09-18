@@ -73,8 +73,9 @@ however much you found out along the way.`;
       "--append-system-prompt", opts.playbook,
       "--permission-mode", "auto",
       "--permission-prompts", "none",
-      "--allowedTools", ...opts.allowedTools,
-      "--disallowedTools", ...opts.disallowedTools,
+      // A variadic flag with an empty list is a parse error, not a no-op.
+      ...(opts.allowedTools.length > 0 ? ["--allowedTools", ...opts.allowedTools] : []),
+      ...(opts.disallowedTools.length > 0 ? ["--disallowedTools", ...opts.disallowedTools] : []),
     ],
     fullPrompt,
     opts.cwd,
