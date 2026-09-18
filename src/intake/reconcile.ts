@@ -54,7 +54,7 @@ export async function runReconcile(loaded: LoadedConfig, opts: { dryRun: boolean
       continue;
     }
 
-    const anchor = link.messages[0]!;
+    const anchor = link.anchor ?? link.messages[0]!;
     info(`#${issue.number} ${dim(issue.title.slice(0, 60))} -> ${bold(state)}`);
     if (!opts.dryRun) {
       await setState(discord, link.channel, anchor, state);

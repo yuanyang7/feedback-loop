@@ -48,6 +48,12 @@ export const ConfigSchema = z.object({
      * scoped to channelId so ordinary conversation cannot become issues.
      */
     commandChannelIds: z.array(z.string()).default([]),
+    /**
+     * Reply in-channel with the issue number when something is filed. A
+     * reaction tells the reporter it landed somewhere; only a link tells them
+     * where, and lets them follow it.
+     */
+    replyWithIssue: z.boolean().default(true),
   }),
   github: z.object({
     /** File holding a GitHub token. Falls back to the ambient `gh` login. */

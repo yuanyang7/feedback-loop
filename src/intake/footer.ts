@@ -9,8 +9,10 @@ const PATTERN = /<!--\s*feedback-loop:v1\s+(\{.*?\})\s*-->/s;
 export interface SourceLink {
   guild: string;
   channel: string;
-  /** Source message snowflakes, oldest first. The first is the anchor we react to. */
+  /** Source message snowflakes, oldest first. */
   messages: string[];
+  /** The message reactions go on. Absent on issues filed before this existed. */
+  anchor?: string;
   /** Discord user ids of the people who reported it. */
   reportedBy: string[];
 }

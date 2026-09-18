@@ -7,7 +7,7 @@ import { DiscordClient, messageUrl, type DiscordMessage } from "./discord.js";
 import { setState } from "./emoji.js";
 import { encodeFooter } from "./footer.js";
 import { GitHubClient, type Issue } from "./github.js";
-import { groupMessages, renderReport, type Report } from "./group.js";
+import { anchorOf, groupMessages, renderReport, type Report } from "./group.js";
 import {
   activeRun, claimRun, describeRejection, HELP, isOperator, parseCommand, startWorker,
 } from "./commands.js";
@@ -91,7 +91,7 @@ export async function runIntake(loaded: LoadedConfig, opts: IntakeOptions): Prom
 
   for (const [index, report] of reports.entries()) {
     const decision = decisions[index]!;
-    const anchor = report.messages[0]!;
+    const anchor = anchorOf(report);
     const link = messageUrl(config.discord.guildId, config.discord.channelId, anchor.id);
     const label = `${dim(`#${index}`)} ${report.authorName}: ${decision.kind} ${dim(`(${decision.confidence.toFixed(2)})`)}`;
 
@@ -134,6 +134,10 @@ export async function runIntake(loaded: LoadedConfig, opts: IntakeOptions): Prom
             `Also reported by **${report.authorName}** in Discord: ${link}\n\n> ${renderReport(report).replace(/\n/g, "\n> ")}`,
           );
           await setState(discord, config.discord.channelId, anchor.id, "duplicate");
+          await replyWithIssue(
+            loaded, discord, anchor.id,
+            `Already tracked — ${issueLink(config.target.repo, existing.number)} · ${existing.title}`,
+          );
         }
         continue;
       }
@@ -167,6 +171,12 @@ export async function runIntake(loaded: LoadedConfig, opts: IntakeOptions): Prom
     // Keep the question mark on a thin report: it is filed, but the reporter is
     // the only one who can make it actionable.
     await setState(discord, config.discord.channelId, anchor.id, lowConfidence ? "unclear" : "logged");
+    await replyWithIssue(
+      loaded, discord, anchor.id,
+      lowConfidence
+        ? `Filed as ${issueLink(config.target.repo, number)} — but I couldn't tell what's actually going wrong from this. Could you add specifics?`
+        : `Filed as ${issueLink(config.target.repo, number)} · ${decision.title}`,
+    );
   }
 
   const newest = messages.at(-1)!.id;
@@ -254,6 +264,22 @@ async function handleCommands(
  * command from another, and a first poll adopts the newest message rather than
  * replaying whatever was already there.
  */
+function issueLink(repo: string, number: number): string {
+  return `[#${number}](https://github.com/${repo}/issues/${number})`;
+}
+
+async function replyWithIssue(
+  loaded: LoadedConfig,
+  discord: DiscordClient,
+  messageId: string,
+  text: string,
+): Promise<void> {
+  if (!loaded.config.discord.replyWithIssue) return;
+  await discord
+    .sendMessage(loaded.config.discord.channelId, text, messageId)
+    .catch(() => undefined); // a failed reply must not cost us the filed issue
+}
+
 async function pollCommandChannels(
   loaded: LoadedConfig,
   discord: DiscordClient,
@@ -371,6 +397,7 @@ function issueBody(
       guild: source.guildId,
       channel: source.channelId,
       messages: report.messages.map((m) => m.id),
+      anchor: anchorOf(report).id,
       reportedBy: [report.authorId],
     }),
   ].join("\n");

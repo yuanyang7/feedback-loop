@@ -60,6 +60,17 @@ function hasContent(message: DiscordMessage): boolean {
   );
 }
 
+/**
+ * The message a reaction and a reply should land on. Not simply the first one:
+ * a forward carries empty content and renders as a bare card, so reacting to
+ * it looks like reacting to nothing. Prefer the first message someone actually
+ * typed, and fall back to the first message when the forward is the whole
+ * report.
+ */
+export function anchorOf(report: Report): DiscordMessage {
+  return report.messages.find((m) => m.content.trim()) ?? report.messages[0]!;
+}
+
 /** Render a report as inert data for the classifier. Never used as instructions. */
 export function renderReport(report: Report): string {
   return report.messages
