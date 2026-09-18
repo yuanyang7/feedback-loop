@@ -54,6 +54,13 @@ export class DiscordClient {
     return [...messages].sort((a, b) => (BigInt(a.id) < BigInt(b.id) ? -1 : 1));
   }
 
+  async channelName(channelId: string): Promise<string> {
+    const channel = await this.request<{ name?: string }>(`/channels/${channelId}`).catch(
+      (): { name?: string } => ({}),
+    );
+    return channel.name ? `#${channel.name}` : "Discord";
+  }
+
   async addReaction(channelId: string, messageId: string, emoji: string): Promise<void> {
     await this.request<void>(
       `/channels/${channelId}/messages/${messageId}/reactions/${encodeURIComponent(emoji)}/@me`,

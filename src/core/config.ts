@@ -39,6 +39,8 @@ export const ConfigSchema = z.object({
   github: z.object({
     /** File holding a GitHub token. Falls back to the ambient `gh` login. */
     tokenFile: z.string().optional(),
+    /** Prepended to every filed title, e.g. "[feedback]". Empty for none. */
+    titlePrefix: z.string().default(""),
     labels: z
       .object({
         source: z.string().default("from-discord"),
@@ -52,8 +54,8 @@ export const ConfigSchema = z.object({
       /** cli = the `claude` CLI you already log into. api = ANTHROPIC_API_KEY. */
       backend: z.enum(["cli", "api"]).default("cli"),
       model: z.string().default("claude-sonnet-5"),
-      /** Classification is a judgement call on short text, not a reasoning problem. */
-      effort: z.enum(["low", "medium", "high", "xhigh", "max"]).default("low"),
+      /** Costs the same as low here, and dedupe judgement is worth the headroom. */
+      effort: z.enum(["low", "medium", "high", "xhigh", "max"]).default("medium"),
       /** Below this, intake files nothing and asks a human to restate. */
       minConfidence: z.number().min(0).max(1).default(0.7),
       /** Deliberately higher than minConfidence: a wrong duplicate loses the report entirely. */
@@ -72,7 +74,7 @@ export const ConfigSchema = z.object({
       maxFixAttempts: z.number().int().positive().default(2),
       /** Triage reads code and drives the app; it is not the fix, so it stays cheap. */
       triageModel: z.string().default("claude-sonnet-5"),
-      triageEffort: z.enum(["low", "medium", "high", "xhigh", "max"]).default("medium"),
+      triageEffort: z.enum(["low", "medium", "high", "xhigh", "max"]).default("high"),
       denyPaths: z.array(z.string()).default(DEFAULT_DENY_PATHS),
     })
     .prefault({}),

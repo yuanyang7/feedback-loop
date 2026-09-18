@@ -67,6 +67,7 @@ export async function runIntake(loaded: LoadedConfig, opts: IntakeOptions): Prom
     return;
   }
 
+  const channelName = await discord.channelName(config.discord.channelId);
   const openIssues = await github.listIssues({ state: "open", limit: 200 });
   const classifier = makeClassifier(config.intake.backend, config.intake.model, config.intake.effort);
   const { decisions, costUsd } = await classifyReports(reports, openIssues, classifier);
@@ -126,7 +127,13 @@ export async function runIntake(loaded: LoadedConfig, opts: IntakeOptions): Prom
       }
     }
 
-    const body = issueBody(decision, report, link, config.discord.guildId, config.discord.channelId, related);
+    const body = issueBody(decision, report, {
+      guildId: config.discord.guildId,
+      channelId: config.discord.channelId,
+      channelName,
+      related,
+    });
+    const title = `${config.github.titlePrefix}${config.github.titlePrefix ? " " : ""}${decision.title}`;
     const labels = [
       config.github.labels.source,
       `severity:${decision.severity}`,
@@ -136,11 +143,11 @@ export async function runIntake(loaded: LoadedConfig, opts: IntakeOptions): Prom
 
     if (opts.dryRun) {
       filed += 1;
-      console.log(`\n${bold(`[dry-run] would file: ${decision.title}`)}\n${dim(labels.join("  "))}\n${body}\n`);
+      console.log(`\n${bold(`[dry-run] would file: ${title}`)}\n${dim(labels.join("  "))}\n${body}\n`);
       continue;
     }
 
-    const number = await github.createIssue({ title: decision.title, body, labels });
+    const number = await github.createIssue({ title, body, labels });
     filed += 1;
     info(`${label} ${bold(`filed #${number}`)} ${decision.title}`);
     await setState(discord, config.discord.channelId, anchor.id, "logged");
@@ -163,30 +170,38 @@ export async function runIntake(loaded: LoadedConfig, opts: IntakeOptions): Prom
 export function issueBody(
   decision: Decision,
   report: Report,
-  link: string,
-  guildId: string,
-  channelId: string,
-  related?: Issue,
+  source: {
+    guildId: string;
+    channelId: string;
+    channelName: string;
+    related?: Issue;
+  },
 ): string {
   const quoted = renderReport(report)
     .split("\n")
     .map((l) => `> ${l}`)
     .join("\n");
 
+  // Every message in the report gets a link, not just the anchor: a report
+  // split across three messages is three places a reviewer may need to look.
+  const links = report.messages
+    .map((m, i) => `[${report.messages.length > 1 ? `part ${i + 1}` : "open in Discord"}](${messageUrl(source.guildId, source.channelId, m.id)})`)
+    .join(" · ");
+
   return [
+    // Kept first so it survives the truncated preview in issue lists and
+    // notification emails — the source is the first thing worth checking.
+    `> **Reported by \`${report.authorName}\` in ${source.channelName}** — ${links}`,
+    "",
     decision.body,
-    ...(related
+    ...(source.related
       ? [
           "",
-          `> **Possibly related to #${related.number}** — ${related.title}`,
+          `> **Possibly related to #${source.related.number}** — ${source.related.title}`,
           ">",
           "> Filed separately because the reported problem looks different. Close this as a duplicate if that call was wrong.",
         ]
       : []),
-    "",
-    "---",
-    "",
-    `**Reported by** ${report.authorName} in Discord — [original message](${link})`,
     "",
     "<details><summary>What was said</summary>",
     "",
@@ -194,11 +209,11 @@ export function issueBody(
     "",
     "</details>",
     "",
-    `<sub>Filed automatically by feedback-loop. The text above is a user report, not a verified diagnosis — confirm it before acting on it.</sub>`,
+    "<sub>Filed automatically by [feedback-loop](https://github.com/yuanyang7/feedback-loop). The text above is a user report, not a verified diagnosis — confirm it before acting on it.</sub>",
     "",
     encodeFooter({
-      guild: guildId,
-      channel: channelId,
+      guild: source.guildId,
+      channel: source.channelId,
       messages: report.messages.map((m) => m.id),
       reportedBy: [report.authorId],
     }),
