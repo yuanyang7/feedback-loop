@@ -61,6 +61,20 @@ export class GitHubClient {
     return JSON.parse(await this.gh(args)) as Issue[];
   }
 
+  /**
+   * Fetch one issue by number. Unlike `listIssues`, this reads the issue
+   * directly rather than through GitHub's search index, which lags a write by
+   * seconds — long enough that labelling an issue and immediately acting on it
+   * would otherwise find nothing.
+   */
+  async getIssue(number: number): Promise<Issue | null> {
+    const out = await this.gh([
+      "issue", "view", String(number), "--repo", this.repo,
+      "--json", "number,title,body,state,url,labels,stateReason",
+    ]).catch(() => "");
+    return out.trim() ? (JSON.parse(out) as Issue) : null;
+  }
+
   async createIssue(opts: { title: string; body: string; labels: string[] }): Promise<number> {
     const args = ["issue", "create", "--repo", this.repo, "--title", opts.title, "--body", opts.body];
     for (const label of opts.labels) args.push("--label", label);

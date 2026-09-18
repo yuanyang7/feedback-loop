@@ -91,7 +91,11 @@ export async function runTriage(
 
   const issue = await pickIssue(github, config.github.labels.agentReady, opts.issueNumber);
   if (!issue) {
-    info(`Nothing labelled ${cyan(config.github.labels.agentReady)} to triage.`);
+    // When an issue was named, pickIssue has already said exactly what was
+    // wrong with it; repeating the generic line here just muddies that.
+    if (opts.issueNumber === undefined) {
+      info(`Nothing labelled ${cyan(config.github.labels.agentReady)} to triage.`);
+    }
     return;
   }
   info(`${bold(`#${issue.number}`)} ${issue.title}`);
@@ -174,8 +178,28 @@ async function pickIssue(
   agentReadyLabel: string,
   explicit?: number,
 ): Promise<Issue | null> {
+  if (explicit !== undefined) {
+    const issue = await github.getIssue(explicit);
+    if (!issue) {
+      warn(`#${explicit} not found.`);
+      return null;
+    }
+    if (issue.state !== "OPEN") {
+      warn(`#${explicit} is ${issue.state.toLowerCase()}.`);
+      return null;
+    }
+    if (!issue.labels.some((l) => l.name === agentReadyLabel)) {
+      warn(
+        `#${explicit} is not labelled ${agentReadyLabel}. That label is the gate saying it is ` +
+          `cleared for an autonomous attempt — add it deliberately:\n` +
+          `  gh issue edit ${explicit} --add-label ${agentReadyLabel}`,
+      );
+      return null;
+    }
+    return issue;
+  }
+
   const candidates = await github.listIssues({ labels: [agentReadyLabel], state: "open" });
-  if (explicit !== undefined) return candidates.find((i) => i.number === explicit) ?? null;
 
   // Highest severity first; oldest wins a tie, so nothing starves.
   const rank = (i: Issue): number => {
