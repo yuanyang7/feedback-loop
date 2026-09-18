@@ -20,6 +20,7 @@ import { GitHubClient, type Issue } from "../intake/github.js";
 import { checkGate } from "./gate.js";
 import { runPhase } from "./agent.js";
 import { ensureWorktree, slugForIssue, type Worktree } from "./worktree.js";
+import { evidenceDir, evidenceInstruction, listEvidence, sweepWorktree } from "./evidence.js";
 
 const exec = promisify(execFile);
 
@@ -49,7 +50,7 @@ const ReviewSchema = z.object({
 type Fix = z.infer<typeof FixSchema>;
 type Review = z.infer<typeof ReviewSchema>;
 
-const FIX_PROMPT = (issue: Issue, triage: string, denyPaths: string[], previousFindings: string[]) => `Fix the bug below. It has already been reproduced — the triage notes say how.
+const FIX_PROMPT = (issue: Issue, triage: string, denyPaths: string[], previousFindings: string[], evidencePath: string) => `Fix the bug below. It has already been reproduced — the triage notes say how.
 
 ${previousFindings.length > 0 ? `A previous attempt was rejected in review. Address these before anything else:\n${previousFindings.map((f) => `  - ${f}`).join("\n")}\n` : ""}
 Work in this worktree, on its existing branch. When the fix is done:
@@ -62,6 +63,11 @@ Work in this worktree, on its existing branch. When the fix is done:
 
 Stop and set blockedReason instead of continuing if a fix would touch any of:
 ${denyPaths.map((p) => `  - ${p}`).join("\n")}
+
+${evidenceInstruction(evidencePath)}
+
+Capture the same interaction twice where you can — before your change and after — so a reviewer can
+see the difference rather than take your word for it.
 
 Prefer the smallest change that actually fixes the reported problem. A refactor you believe in is
 not in scope, and it makes the diff harder to review.
@@ -180,7 +186,7 @@ async function runFixInner(
 
   if (opts.dryRun) {
     console.log(`\n${dim("[dry-run] would run the fix phase with this prompt:")}\n`);
-    console.log(FIX_PROMPT(issue, triageNotes, config.worker.denyPaths, []));
+    console.log(FIX_PROMPT(issue, triageNotes, config.worker.denyPaths, [], "<run artifact dir>/evidence"));
     return null;
   }
 
@@ -188,6 +194,7 @@ async function runFixInner(
   const artifactDir = join(runsDir(target), `${stamp()}-fix-${slug}`);
   mkdirSync(artifactDir, { recursive: true });
 
+  const evidence = evidenceDir(artifactDir);
   const worktree = await ensureWorktree(repoPath, config.target.baseBranch, slug, "fix");
   if (!existsSync(join(worktree.path, "node_modules"))) {
     warn("  worktree has no node_modules — triage's setup is gone; the fix session will have to redo it");
@@ -212,7 +219,7 @@ async function runFixInner(
 
     const fixRun = await runPhase(
       `fix-${attempt}`,
-      FIX_PROMPT(issue, triageNotes, config.worker.denyPaths, findings),
+      FIX_PROMPT(issue, triageNotes, config.worker.denyPaths, findings, evidence),
       FixSchema,
       {
         ...phaseOpts,
@@ -225,6 +232,7 @@ async function runFixInner(
     );
     spent += fixRun.costUsd;
     fix = fixRun.verdict;
+    await sweepWorktree(worktree.path, evidence);
 
     if (!fix) {
       const sha = await lastCommit(worktree, config.target.baseBranch);
@@ -307,7 +315,7 @@ async function runFixInner(
 
   if (!fix || !review) return null;
 
-  const prUrl = await openPullRequest(github, config, worktree, issue, fix, review, triageNotes, spent);
+  const prUrl = await openPullRequest(github, config, worktree, issue, fix, review, triageNotes, spent, artifactDir, listEvidence(evidence));
   info(`  ${green("PR open")} ${prUrl}`);
   await github.removeLabels(issue.number, ["in-progress", config.github.labels.readyToFix]);
   await react(loaded, issue, "prReady");
@@ -324,6 +332,8 @@ async function openPullRequest(
   review: Review,
   triageNotes: string,
   spent: number,
+  artifactDir: string,
+  evidenceFiles: string[],
 ): Promise<string> {
   await exec("git", ["-C", worktree.path, "push", "-u", "origin", worktree.branch], {
     env: { ...process.env, SKIP_CI_HOOK: process.env.SKIP_CI_HOOK ?? "" },
@@ -337,6 +347,15 @@ async function openPullRequest(
     "## How this was verified",
     "",
     fix.verification,
+    "",
+    ...(evidenceFiles.length > 0
+      ? [
+          "",
+          "**Captured while verifying** — in `" + artifactDir + "/evidence`:",
+          "",
+          ...evidenceFiles.map((f) => `- \`${f}\``),
+        ]
+      : ["", "_No evidence files were captured._"]),
     "",
     "## What to scrutinise",
     "",

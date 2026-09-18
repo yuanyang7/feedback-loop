@@ -18,6 +18,7 @@ import { GitHubClient, type Issue } from "../intake/github.js";
 import { checkGate } from "./gate.js";
 import { runPhase } from "./agent.js";
 import { ensureWorktree, isUntouched, removeWorktree, slugForIssue } from "./worktree.js";
+import { evidenceDir, evidenceInstruction, listEvidence, sweepWorktree } from "./evidence.js";
 
 const VerdictSchema = z.object({
   evidenceKind: z
@@ -53,7 +54,7 @@ const VerdictSchema = z.object({
 
 type Verdict = z.infer<typeof VerdictSchema>;
 
-const PROMPT = (issue: Issue, denyPaths: string[]) => `You are triaging a bug report. You will NOT fix anything in this session.
+const PROMPT = (issue: Issue, denyPaths: string[], evidencePath: string) => `You are triaging a bug report. You will NOT fix anything in this session.
 
 Your job has exactly two parts:
 
@@ -67,6 +68,8 @@ Your job has exactly two parts:
 
 Do not edit, create, or delete any source file. You may write scratch scripts for driving the app,
 but the worktree must end this session with a clean \`git status\`.
+
+${evidenceInstruction(evidencePath)}
 
 Flag blockedReason as "deny-path" if a fix would touch any of these:
 ${denyPaths.map((p) => `  - ${p}`).join("\n")}
@@ -120,7 +123,7 @@ export async function runTriage(
 
   if (opts.dryRun) {
     console.log(`\n${dim("[dry-run] would triage in a fresh worktree with this prompt:")}\n`);
-    console.log(PROMPT(issue, config.worker.denyPaths));
+    console.log(PROMPT(issue, config.worker.denyPaths, "<run artifact dir>/evidence"));
     return;
   }
 
@@ -128,12 +131,13 @@ export async function runTriage(
   const artifactDir = join(runsDir(target), `${new Date().toISOString().slice(0, 19).replace(/[:]/g, "")}-${slug}`);
   mkdirSync(artifactDir, { recursive: true });
 
+  const evidence = evidenceDir(artifactDir);
   const worktree = await ensureWorktree(repoPath, config.target.baseBranch, slug, "fix");
   info(`  worktree ${dim(worktree.path)}`);
   await github.addLabels(issue.number, ["in-progress"]);
   await react(loaded, issue, "working");
 
-  const run = await runPhase("triage", PROMPT(issue, config.worker.denyPaths), VerdictSchema, {
+  const run = await runPhase("triage", PROMPT(issue, config.worker.denyPaths, evidence), VerdictSchema, {
     cwd: worktree.path,
     artifactDir,
     model: config.worker.triageModel,
@@ -144,7 +148,9 @@ export async function runTriage(
     disallowedTools: ["Edit", "NotebookEdit"],
   });
 
-  // The tool list is a hint; git is the guarantee that nothing was changed.
+  // Sweep before the cleanliness check: an untracked screenshot is evidence to
+  // keep, and also the reason a worktree would otherwise look dirty.
+  await sweepWorktree(worktree.path, evidence);
   const clean = await isUntouched(repoPath, worktree, config.target.baseBranch);
   if (!clean) {
     warn("  the triage session modified the worktree — that should not happen; leaving it for inspection");
@@ -152,7 +158,7 @@ export async function runTriage(
 
   const verdict = run.verdict;
   const summary = verdict
-    ? renderVerdict(verdict, run, artifactDir)
+    ? renderVerdict(verdict, run, artifactDir, listEvidence(evidence))
     : [
         "### ⚠️ Triage did not complete",
         "",
@@ -255,6 +261,7 @@ function renderVerdict(
   verdict: Verdict,
   run: { costUsd: number; turns: number; sessionId?: string },
   artifactDir: string,
+  evidenceFiles: string[],
 ): string {
   const grounded = verdict.evidenceKind === "observed-running" || verdict.evidenceKind === "proven-by-code";
   const head = verdict.reproduced && grounded ? "### ✅ Reproduced" : "### ❓ Could not reproduce";
@@ -274,6 +281,9 @@ function renderVerdict(
 
   if (verdict.evidence.trim()) {
     lines.push("", "**Evidence**", "", verdict.evidence);
+  }
+  if (evidenceFiles.length > 0) {
+    lines.push("", "**Captured**", "", ...evidenceFiles.map((f) => `- \`${f}\``));
   }
   lines.push("", "<details><summary>What was tried</summary>", "", verdict.attempted, "", "</details>");
 
