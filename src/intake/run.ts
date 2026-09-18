@@ -1,5 +1,5 @@
 import { readSecret, type LoadedConfig } from "../core/config.js";
-import { bold, cyan, dim, info, warn } from "../core/log.js";
+import { bold, cyan, dim, info, yellow } from "../core/log.js";
 import { makeClassifier } from "../core/llm.js";
 import { appendRunLog, readIntakeState, writeIntakeState } from "../core/state.js";
 import { classifyReports, type Decision } from "./classify.js";
@@ -101,7 +101,14 @@ export async function runIntake(loaded: LoadedConfig, opts: IntakeOptions): Prom
 
     if (decision.duplicateOf !== null) {
       const existing = openIssues.find((i) => i.number === decision.duplicateOf);
-      if (existing) {
+      const sure = decision.duplicateConfidence >= config.intake.minDuplicateConfidence;
+      if (existing && !sure) {
+        info(
+          `${label} ${yellow(`unsure duplicate of #${existing.number}`)} ` +
+            `${dim(`(${decision.duplicateConfidence.toFixed(2)} < ${config.intake.minDuplicateConfidence})`)} — filing separately`,
+        );
+      }
+      if (existing && sure) {
         duplicates += 1;
         info(`${label} ${cyan(`duplicate of #${existing.number}`)} ${existing.title}`);
         if (!opts.dryRun) {

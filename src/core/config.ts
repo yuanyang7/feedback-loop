@@ -54,6 +54,8 @@ export const ConfigSchema = z.object({
       model: z.string().default("claude-sonnet-5"),
       /** Below this, intake files nothing and asks a human to restate. */
       minConfidence: z.number().min(0).max(1).default(0.7),
+      /** Deliberately higher than minConfidence: a wrong duplicate loses the report entirely. */
+      minDuplicateConfidence: z.number().min(0).max(1).default(0.85),
       /** Max messages pulled per tick. */
       lookbackLimit: z.number().int().positive().default(100),
       /** Consecutive messages from one author within this window are one report. */
