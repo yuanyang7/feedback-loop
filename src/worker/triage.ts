@@ -102,11 +102,20 @@ export async function runTriage(
   const gate = await checkGate(config, github);
   if (!gate.ok) {
     warn(`gate closed — ${gate.reason}`);
+    await announce(loaded, opts.announceChannel, `Can't start — ${gate.reason}`);
     return;
   }
 
   const issue = await pickIssue(github, config.github.labels.agentReady, opts.issueNumber);
   if (!issue) {
+    // Whoever asked for this is waiting on a reply. Silence reads as a hang.
+    await announce(
+      loaded,
+      opts.announceChannel,
+      opts.issueNumber === undefined
+        ? `Nothing labelled \`${config.github.labels.agentReady}\` to triage.`
+        : `Can't triage #${opts.issueNumber} — it isn't labelled \`${config.github.labels.agentReady}\`, or it's closed.`,
+    );
     // When an issue was named, pickIssue has already said exactly what was
     // wrong with it; repeating the generic line here just muddies that.
     if (opts.issueNumber === undefined) {
@@ -118,6 +127,7 @@ export async function runTriage(
 
   if (!playbookPath) {
     warn("No .feedback-loop/playbook.md — refusing to run an agent in this repo without one.");
+    await announce(loaded, opts.announceChannel, "Can't start — this repo has no `.feedback-loop/playbook.md`.");
     return;
   }
   const playbook = readFileSync(playbookPath, "utf8");

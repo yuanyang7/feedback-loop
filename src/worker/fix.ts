@@ -163,6 +163,7 @@ async function runFixInner(
   const gate = await checkGate(config, github);
   if (!gate.ok) {
     warn(`gate closed — ${gate.reason}`);
+    await announce(loaded, opts.announceChannel, `Can't start — ${gate.reason}`);
     return null;
   }
 
@@ -171,12 +172,20 @@ async function runFixInner(
     if (opts.issueNumber === undefined) {
       info(`Nothing labelled ${cyan(labels.readyToFix)} to fix. Run triage first.`);
     }
+    await announce(
+      loaded,
+      opts.announceChannel,
+      opts.issueNumber === undefined
+        ? `Nothing labelled \`${labels.readyToFix}\` to fix — run \`triage\` on something first.`
+        : `Can't fix #${opts.issueNumber} — it isn't labelled \`${labels.readyToFix}\`. Triage has to reproduce it first.`,
+    );
     return null;
   }
   info(`${bold(`#${issue.number}`)} ${issue.title}`);
 
   if (!playbookPath) {
     warn("No .feedback-loop/playbook.md — refusing to run an agent in this repo without one.");
+    await announce(loaded, opts.announceChannel, "Can't start — this repo has no `.feedback-loop/playbook.md`.");
     return null;
   }
   const { readFileSync } = await import("node:fs");

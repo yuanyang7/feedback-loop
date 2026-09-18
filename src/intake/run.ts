@@ -243,6 +243,15 @@ async function handleCommands(
       continue;
     }
 
+    // Check the gate before promising ten minutes. The worker would refuse this
+    // in a second anyway, and a promise followed by silence is worse than a
+    // refusal — it leaves someone waiting on a run that already died.
+    const refusal = await gateRefusal(loaded, command);
+    if (refusal) {
+      await reply(refusal);
+      continue;
+    }
+
     if (dryRun) {
       await reply(`[dry-run] would start \`${command.kind} #${command.issue}\``);
       continue;
@@ -264,6 +273,37 @@ async function handleCommands(
  * command from another, and a first poll adopts the newest message rather than
  * replaying whatever was already there.
  */
+/**
+ * Returns a message explaining why this cannot start, or null if it can. The
+ * label is deliberately not applied for you: it is the gate that says a human
+ * cleared this for an autonomous attempt, so the reply says how to grant it.
+ */
+async function gateRefusal(
+  loaded: LoadedConfig,
+  command: { kind: "triage" | "fix"; issue: number },
+): Promise<string | null> {
+  const { config } = loaded;
+  const github = new GitHubClient(
+    config.target.repo,
+    config.github.tokenFile ? readSecret(config.github.tokenFile, "GITHUB_TOKEN") : undefined,
+  );
+  const issue = await github.getIssue(command.issue).catch(() => null);
+  if (!issue) return `Can't run \`${command.kind}\` — #${command.issue} doesn't exist.`;
+  if (issue.state !== "OPEN") return `Can't run \`${command.kind}\` — #${command.issue} is closed.`;
+
+  const has = (name: string): boolean => issue.labels.some((l) => l.name === name);
+  const needed = command.kind === "triage" ? config.github.labels.agentReady : config.github.labels.readyToFix;
+  if (!has(needed)) {
+    return command.kind === "triage"
+      ? `#${command.issue} isn't labelled \`${needed}\` yet — that's the gate saying it's cleared for an autonomous attempt.\n\`gh issue edit ${command.issue} --add-label ${needed}\``
+      : `#${command.issue} isn't labelled \`${needed}\` — only an issue triage actually reproduced gets a fix attempt. Try \`triage ${command.issue}\` first.`;
+  }
+  if (has("needs-info")) {
+    return `#${command.issue} is labelled \`needs-info\` — it's too thin to act on. It needs specifics before an agent can do anything with it.`;
+  }
+  return null;
+}
+
 function issueLink(repo: string, number: number): string {
   return `[#${number}](https://github.com/${repo}/issues/${number})`;
 }
