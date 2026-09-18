@@ -34,7 +34,9 @@ export async function runIntake(loaded: LoadedConfig, opts: IntakeOptions): Prom
   if (cursor === null && opts.backfill === 0) {
     const recent = await discord.fetchMessages(config.discord.channelId, null, 1);
     const newest = recent.at(-1);
-    writeIntakeState(target, { cursor: newest?.id ?? null, lastTickAt: new Date().toISOString() });
+    if (!opts.dryRun) {
+      writeIntakeState(target, { cursor: newest?.id ?? null, lastTickAt: new Date().toISOString() });
+    }
     info(
       newest
         ? `No cursor yet — starting from message ${dim(newest.id)}. Use --backfill N to include history.`
@@ -48,7 +50,7 @@ export async function runIntake(loaded: LoadedConfig, opts: IntakeOptions): Prom
   const messages = await discord.fetchMessages(config.discord.channelId, cursor, limit);
   if (messages.length === 0) {
     info("No new messages.");
-    writeIntakeState(target, { cursor, lastTickAt: new Date().toISOString() });
+    if (!opts.dryRun) writeIntakeState(target, { cursor, lastTickAt: new Date().toISOString() });
     return;
   }
 
@@ -59,7 +61,9 @@ export async function runIntake(loaded: LoadedConfig, opts: IntakeOptions): Prom
   });
   info(`${messages.length} new message(s) -> ${reports.length} candidate report(s).`);
   if (reports.length === 0) {
-    writeIntakeState(target, { cursor: messages.at(-1)!.id, lastTickAt: new Date().toISOString() });
+    if (!opts.dryRun) {
+      writeIntakeState(target, { cursor: messages.at(-1)!.id, lastTickAt: new Date().toISOString() });
+    }
     return;
   }
 
