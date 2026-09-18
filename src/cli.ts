@@ -131,10 +131,30 @@ async function status(dir: string): Promise<number> {
   console.log(`    cursor     ${state.cursor ?? dim("(not started)")}`);
   console.log(`    last tick  ${state.lastTickAt ?? dim("never")}`);
 
+  // The budget cap only governs worker runs, but intake spends money too and
+  // was invisible — so report both, and be explicit about which one is capped.
+  const today = new Date().toISOString().slice(0, 10);
+  const todays = readRunLog(target, 500).filter((e) => e.at.startsWith(today));
+  const cost = (kinds: string[]): number =>
+    todays
+      .filter((e) => kinds.includes(e.kind))
+      .reduce((sum, e) => sum + (typeof e.data?.costUsd === "number" ? e.data.costUsd : 0), 0);
+  const workerSpend = cost(["worker"]);
+
+  console.log(`\n  ${bold("spend today")}`);
+  console.log(`    $${cost(["intake", "reconcile"]).toFixed(3).padStart(7)}  intake ${dim("(uncapped)")}`);
+  console.log(
+    `    $${workerSpend.toFixed(3).padStart(7)}  worker ${dim(`(budget $${config.worker.dailyBudgetUsd})`)}` +
+      (workerSpend >= config.worker.dailyBudgetUsd ? ` ${yellow("— exhausted")}` : ""),
+  );
+
   if (log.length > 0) {
     console.log(`\n  ${bold("recent")}`);
     for (const entry of log.slice().reverse()) {
-      console.log(`    ${dim(entry.at.slice(5, 16).replace("T", " "))} ${entry.kind.padEnd(9)} ${entry.summary}`);
+      const c = typeof entry.data?.costUsd === "number" ? `$${entry.data.costUsd.toFixed(3)}` : "";
+      console.log(
+        `    ${dim(entry.at.slice(5, 16).replace("T", " "))} ${entry.kind.padEnd(9)} ${c.padStart(7)}  ${entry.summary}`,
+      );
     }
   }
 
