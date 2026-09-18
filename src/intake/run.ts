@@ -1,6 +1,6 @@
-import Anthropic from "@anthropic-ai/sdk";
 import { readSecret, type LoadedConfig } from "../core/config.js";
 import { bold, cyan, dim, info, warn } from "../core/log.js";
+import { makeClassifier } from "../core/llm.js";
 import { appendRunLog, readIntakeState, writeIntakeState } from "../core/state.js";
 import { classifyReports, type Decision } from "./classify.js";
 import { DiscordClient, messageUrl } from "./discord.js";
@@ -61,10 +61,9 @@ export async function runIntake(loaded: LoadedConfig, opts: IntakeOptions): Prom
   }
 
   const openIssues = await github.listIssues({ state: "open", limit: 200 });
-  const decisions = await classifyReports(reports, openIssues, {
-    model: config.intake.model,
-    client: new Anthropic(),
-  });
+  const classifier = makeClassifier(config.intake.backend, config.intake.model);
+  const { decisions, costUsd } = await classifyReports(reports, openIssues, classifier);
+  if (costUsd !== null) info(`classified ${reports.length} report(s) for ${dim(`$${costUsd.toFixed(4)}`)}`);
 
   let filed = 0;
   let duplicates = 0;
@@ -137,7 +136,7 @@ export async function runIntake(loaded: LoadedConfig, opts: IntakeOptions): Prom
       kind: "intake",
       target,
       summary: `${filed} filed, ${duplicates} duplicate, ${skipped} skipped from ${messages.length} message(s)`,
-      data: { filed, duplicates, skipped, messages: messages.length, cursor: newest },
+      data: { filed, duplicates, skipped, messages: messages.length, cursor: newest, costUsd },
     });
   }
   info(`${bold("done")} — ${filed} filed, ${duplicates} duplicate, ${skipped} skipped.`);

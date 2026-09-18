@@ -1,6 +1,5 @@
-import Anthropic from "@anthropic-ai/sdk";
-import { zodOutputFormat } from "@anthropic-ai/sdk/helpers/zod";
 import { z } from "zod";
+import type { Classifier } from "../core/llm.js";
 import type { Issue } from "./github.js";
 import { renderReport, type Report } from "./group.js";
 
@@ -50,13 +49,17 @@ Guidance:
 - severity: high = data loss, broken signup/checkout, or the app unusable. medium = a real feature
   is broken for some users. low = cosmetic, rare, or a minor annoyance.`;
 
+export interface ClassifyResult {
+  decisions: Decision[];
+  costUsd: number | null;
+}
+
 export async function classifyReports(
   reports: Report[],
   openIssues: Issue[],
-  opts: { model: string; client?: Anthropic },
-): Promise<Decision[]> {
-  if (reports.length === 0) return [];
-  const client = opts.client ?? new Anthropic();
+  classifier: Classifier,
+): Promise<ClassifyResult> {
+  if (reports.length === 0) return { decisions: [], costUsd: null };
 
   const issueList =
     openIssues.length > 0
@@ -67,22 +70,17 @@ export async function classifyReports(
     .map((r, i) => `<report index="${i}" author="${r.authorName}">\n${renderReport(r)}\n</report>`)
     .join("\n\n");
 
-  const response = await client.messages.parse({
-    model: opts.model,
-    max_tokens: 8000,
-    system: [{ type: "text", text: SYSTEM, cache_control: { type: "ephemeral" } }],
-    output_config: { format: zodOutputFormat(ResultSchema), effort: "low" },
-    messages: [
-      {
-        role: "user",
-        content: `Open issues:\n${issueList}\n\nReports to classify (${reports.length}):\n\n${reportBlock}\n\nEmit exactly one decision per report, using the index attribute.`,
-      },
-    ],
-  });
+  const { value, costUsd } = await classifier.complete(
+    {
+      system: SYSTEM,
+      user: `Open issues:\n${issueList}\n\nReports to classify (${reports.length}):\n\n${reportBlock}\n\nEmit exactly one decision per report, using the index attribute.`,
+    },
+    ResultSchema,
+  );
 
-  const decisions = response.parsed_output?.decisions ?? [];
+  const decisions = value.decisions;
   // The model occasionally skips or repeats an index; normalise to one per report.
-  return reports.map((_, index) => {
+  const normalised = reports.map((_, index) => {
     const found = decisions.find((d) => d.index === index);
     return (
       found ?? {
@@ -98,4 +96,6 @@ export async function classifyReports(
       }
     );
   });
+
+  return { decisions: normalised, costUsd };
 }

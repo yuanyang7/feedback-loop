@@ -25,13 +25,26 @@ why it's deliberately last.
 | ✅ | `intake` — chat messages → deduped GitHub issues, with reactions |
 | ✅ | `reconcile` — chat reactions catch up to GitHub state |
 | ✅ | `status` — queue, caps, recent runs |
+| ✅ | two model backends — the `claude` CLI you already have, or an API key |
 | ⬜ | `worker` — repro → size → fix → review → PR |
 | ⬜ | `dashboard` — local page with screenshots and run artifacts |
 
 ## Setup
 
-Requires Node 20+, the [`gh`](https://cli.github.com) CLI logged in, a Discord bot token, and
-Anthropic API credentials (`ANTHROPIC_API_KEY`, or an `ant auth login` profile).
+Requires Node 20+, the [`gh`](https://cli.github.com) CLI logged in, and a Discord bot token.
+
+For the model call, pick a backend in `intake.backend`:
+
+- **`cli`** (default) — spawns the `claude` CLI headless. No API key and no separate billing: it
+  uses the Claude Code login you already have. Check it works with
+  `echo hi | claude -p --output-format json`; if that reports an expired OAuth session, run
+  `claude` once interactively to refresh the login.
+- **`api`** — the Anthropic SDK with structured outputs, using `ANTHROPIC_API_KEY` from
+  [console.anthropic.com](https://console.anthropic.com). Pay-per-token, but it needs no
+  interactive login, which is what you want on an always-on machine.
+
+Either way the model only ever classifies text. It gets no tools, runs in an empty directory so no
+nearby `CLAUDE.md` or MCP config leaks in, and cannot act on what it reads.
 
 ```bash
 git clone <this repo> && cd feedback-loop && npm install

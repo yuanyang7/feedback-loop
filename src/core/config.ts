@@ -49,6 +49,8 @@ export const ConfigSchema = z.object({
   }),
   intake: z
     .object({
+      /** cli = the `claude` CLI you already log into. api = ANTHROPIC_API_KEY. */
+      backend: z.enum(["cli", "api"]).default("cli"),
       model: z.string().default("claude-sonnet-5"),
       /** Below this, intake files nothing and asks a human to restate. */
       minConfidence: z.number().min(0).max(1).default(0.7),
