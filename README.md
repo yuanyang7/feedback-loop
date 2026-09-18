@@ -17,8 +17,8 @@ It never merges, never releases, and never touches production.
 
 ## Status
 
-Intake works. The worker is not built yet — see [DESIGN.md](DESIGN.md) § 8 for the build order and
-why it's deliberately last.
+Intake and the worker both run. Nothing merges — a run ends at a pull request waiting for you.
+See [DESIGN.md](DESIGN.md) § 8 for the build order and why fixing came last.
 
 | | |
 |---|---|
@@ -26,7 +26,8 @@ why it's deliberately last.
 | ✅ | `reconcile` — chat reactions catch up to GitHub state |
 | ✅ | `status` — queue, caps, recent runs |
 | ✅ | two model backends — the `claude` CLI you already have, or an API key |
-| ⬜ | `worker` — repro → size → fix → review → PR |
+| ✅ | `triage` — reproduce + size, never edits source |
+| ✅ | `fix` — implement → adversarial review → PR, never merges |
 | ⬜ | `dashboard` — local page with screenshots and run artifacts |
 
 ## Setup

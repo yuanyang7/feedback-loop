@@ -47,6 +47,9 @@ export const ConfigSchema = z.object({
         agentReady: z.string().default("agent-ready"),
         needsDecision: z.string().default("needs-decision"),
         needsInfo: z.string().default("needs-info"),
+        /** Applied by triage when a bug was reproduced and nothing blocks a fix. */
+        readyToFix: z.string().default("ready-to-fix"),
+        agentPr: z.string().default("agent-pr"),
       })
       .prefault({}),
   }),
@@ -77,6 +80,12 @@ export const ConfigSchema = z.object({
       /** Hard ceiling for a single phase. The daily budget alone is too coarse. */
       maxRunUsd: z.number().positive().default(3),
       triageModel: z.string().default("claude-sonnet-5"),
+      /** Writing the fix is the expensive judgement call, so it gets the better model. */
+      fixModel: z.string().default("claude-opus-5"),
+      fixEffort: z.enum(["low", "medium", "high", "xhigh", "max"]).default("high"),
+      /** Review is the last gate before a human, so it does not economise either. */
+      reviewModel: z.string().default("claude-opus-5"),
+      reviewEffort: z.enum(["low", "medium", "high", "xhigh", "max"]).default("high"),
       triageEffort: z.enum(["low", "medium", "high", "xhigh", "max"]).default("high"),
       denyPaths: z.array(z.string()).default(DEFAULT_DENY_PATHS),
     })

@@ -7,6 +7,7 @@ import { readIntakeState, readRunLog } from "./core/state.js";
 import { runIntake } from "./intake/run.js";
 import { runReconcile } from "./intake/reconcile.js";
 import { runTriage } from "./worker/triage.js";
+import { runFix } from "./worker/fix.js";
 import { STATE_EMOJI } from "./intake/emoji.js";
 import { readSecret } from "./core/config.js";
 import { GitHubClient } from "./intake/github.js";
@@ -19,13 +20,14 @@ Usage:
   feedback-loop reconcile [dir]       Sync chat reactions with GitHub state
   feedback-loop tick [dir]            intake + reconcile
   feedback-loop triage [dir]          Reproduce + size one agent-ready issue (never fixes)
+  feedback-loop fix [dir]             Fix + adversarial review + open a PR (never merges)
   feedback-loop status [dir]          Queue, recent runs, and caps
   feedback-loop labels [dir]          Create the labels this tool expects
 
 Options:
   --dry-run        Classify and print; create nothing, react to nothing
   --backfill N     On a fresh cursor, process the last N messages (default: skip history)
-  --issue N        triage: pick this issue instead of the highest-severity one
+  --issue N        triage/fix: act on this issue instead of picking one
 `;
 
 async function main(): Promise<number> {
@@ -67,6 +69,11 @@ async function main(): Promise<number> {
       await runTriage(loadConfig(dir), { dryRun, issueNumber });
       return 0;
     }
+    case "fix": {
+      const i = argv.indexOf("--issue");
+      await runFix(loadConfig(dir), { dryRun, issueNumber: i >= 0 ? Number(argv[i + 1]) : undefined });
+      return 0;
+    }
     case "status":
       return status(dir);
     case "labels":
@@ -102,10 +109,11 @@ async function status(dir: string): Promise<number> {
     config.github.tokenFile ? readSecret(config.github.tokenFile, "GITHUB_TOKEN") : undefined,
   );
 
-  const [sourced, ready, blocked, openPRs] = await Promise.all([
+  const [sourced, ready, blocked, readyToFix, openPRs] = await Promise.all([
     github.listIssues({ labels: [config.github.labels.source], state: "open" }),
     github.listIssues({ labels: [config.github.labels.agentReady], state: "open" }),
     github.listIssues({ labels: [config.github.labels.needsDecision], state: "open" }),
+    github.listIssues({ labels: [config.github.labels.readyToFix], state: "open" }),
     github.listPullRequests({ state: "open" }),
   ]);
 
@@ -116,6 +124,7 @@ async function status(dir: string): Promise<number> {
   console.log(`  ${bold("queue")}`);
   console.log(`    ${String(sourced.length).padStart(3)}  from chat, open`);
   console.log(`    ${String(ready.length).padStart(3)}  ${cyan("agent-ready")}`);
+  console.log(`    ${String(readyToFix.length).padStart(3)}  ${green("ready-to-fix")} ${dim("(reproduced)")}`);
   console.log(`    ${String(blocked.length).padStart(3)}  ${yellow("needs-decision")}`);
   const agentPRs = openPRs.filter((pr) => (pr.labels ?? []).some((l) => l.name === "agent-pr"));
   console.log(
@@ -180,7 +189,8 @@ async function labels(dir: string): Promise<number> {
     [config.github.labels.needsDecision, "D93F0B", "Needs a human decision before any fix"],
     [config.github.labels.needsInfo, "D4C5F9", "Filed below the confidence floor; ask the reporter for specifics"],
     ["in-progress", "FBCA04", "A worker run is currently working on this"],
-    ["agent-pr", "5319E7", "Opened by a worker run; awaiting human review and merge"],
+    [config.github.labels.agentPr, "5319E7", "Opened by a worker run; awaiting human review and merge"],
+    [config.github.labels.readyToFix, "0E8A16", "Reproduced by triage; cleared for a fix attempt"],
     ["severity:high", "B60205", "Data loss, or a core flow is unusable"],
     ["severity:medium", "D93F0B", "A real feature is broken for some users"],
     ["severity:low", "FEF2C0", "Cosmetic, rare, or a minor annoyance"],

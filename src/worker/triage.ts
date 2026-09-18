@@ -158,7 +158,9 @@ export async function runTriage(
   if (safeToFix) {
     info(`  ${green("reproduced")} — size ${verdict.size}; ready for a fix attempt`);
     await react(loaded, issue, "working");
-    // in-progress stays: the worktree is kept and a fix phase will pick it up.
+    // in-progress stays, and ready-to-fix is how the fix phase finds this issue
+    // and knows its worktree is still on disk with a verified reproduction.
+    await github.addLabels(issue.number, [config.github.labels.readyToFix]);
   } else {
     const why = verdict?.blockedReason ?? "triage-failed";
     info(`  ${yellow("escalating")} — ${why}`);

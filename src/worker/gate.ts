@@ -7,18 +7,17 @@ import type { Config } from "../core/config.js";
 import { readRunLog } from "../core/state.js";
 import type { GitHubClient } from "../intake/github.js";
 
-export const AGENT_PR_LABEL = "agent-pr";
-
 export interface GateResult {
   ok: boolean;
   reason?: string;
 }
 
 export async function checkGate(config: Config, github: GitHubClient): Promise<GateResult> {
+  const agentPrLabel = config.github.labels.agentPr;
   // Only the worker's own PRs count. The cap is on the queue this tool
   // produces, not on however many PRs the humans happen to have open.
   const openPRs = await github.listPullRequests({ state: "open" });
-  const agentPRs = openPRs.filter((pr) => (pr.labels ?? []).some((l) => l.name === AGENT_PR_LABEL));
+  const agentPRs = openPRs.filter((pr) => (pr.labels ?? []).some((l) => l.name === agentPrLabel));
   if (agentPRs.length >= config.worker.maxOpenPRs) {
     return {
       ok: false,
