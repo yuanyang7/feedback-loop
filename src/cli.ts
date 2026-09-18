@@ -2,7 +2,7 @@
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { loadConfig } from "./core/config.js";
-import { bold, cyan, dim, fail, green, info, yellow } from "./core/log.js";
+import { bold, cyan, dim, fail, green, info, red, yellow } from "./core/log.js";
 import { readIntakeState, readRunLog } from "./core/state.js";
 import { runIntake } from "./intake/run.js";
 import { runReconcile } from "./intake/reconcile.js";
@@ -136,9 +136,28 @@ async function status(dir: string): Promise<number> {
     `\n  ${bold("worker")} ${capHit ? yellow("paused — PR queue is full, drain it to resume") : green("free to pick up work")}`,
   );
 
+  // An unattended tick that stops working is silent by nature — the CLI login
+  // it depends on expires, and nothing else notices. Make staleness loud here,
+  // because this screen is the only place someone would look.
+  const lastTick = state.lastTickAt ? Date.parse(state.lastTickAt) : null;
+  const staleMinutes = lastTick ? Math.round((Date.now() - lastTick) / 60000) : null;
+  const stale = staleMinutes !== null && staleMinutes > config.intake.staleAfterMinutes;
+
   console.log(`\n  ${bold("intake")}`);
   console.log(`    cursor     ${state.cursor ?? dim("(not started)")}`);
-  console.log(`    last tick  ${state.lastTickAt ?? dim("never")}`);
+  console.log(
+    `    last tick  ${state.lastTickAt ?? dim("never")}` +
+      (staleMinutes === null
+        ? ""
+        : stale
+          ? `  ${red(`— ${formatAge(staleMinutes)} ago, expected every ${config.intake.staleAfterMinutes}m`)}`
+          : `  ${dim(`(${formatAge(staleMinutes)} ago)`)}`),
+  );
+  if (stale) {
+    console.log(
+      `    ${red("!")}  ${dim("a scheduled tick has not run. Check the login with")} ${cyan("claude auth status")}${dim(", and")} ${cyan(`tail ~/.feedback-loop/${target}/tick.log`)}`,
+    );
+  }
 
   // The budget cap only governs worker runs, but intake spends money too and
   // was invisible — so report both, and be explicit about which one is capped.
@@ -203,6 +222,12 @@ async function labels(dir: string): Promise<number> {
     info(`${green("label")} ${name}`);
   }
   return 0;
+}
+
+function formatAge(minutes: number): string {
+  if (minutes < 60) return `${minutes}m`;
+  if (minutes < 60 * 48) return `${Math.round(minutes / 60)}h`;
+  return `${Math.round(minutes / (60 * 24))}d`;
 }
 
 const SAMPLE_CONFIG = `# feedback-loop — target configuration

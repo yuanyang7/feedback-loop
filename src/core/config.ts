@@ -68,6 +68,8 @@ export const ConfigSchema = z.object({
       lookbackLimit: z.number().int().positive().default(100),
       /** Consecutive messages from one author within this window are one report. */
       groupWindowSeconds: z.number().int().positive().default(300),
+      /** status flags the schedule as broken past this. Set above your interval. */
+      staleAfterMinutes: z.number().int().positive().default(45),
     })
     .prefault({}),
   worker: z
