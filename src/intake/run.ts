@@ -6,7 +6,7 @@ import { classifyReports, type Decision } from "./classify.js";
 import { DiscordClient, messageUrl } from "./discord.js";
 import { setState } from "./emoji.js";
 import { encodeFooter } from "./footer.js";
-import { GitHubClient } from "./github.js";
+import { GitHubClient, type Issue } from "./github.js";
 import { groupMessages, renderReport, type Report } from "./group.js";
 
 export interface IntakeOptions {
@@ -99,13 +99,17 @@ export async function runIntake(loaded: LoadedConfig, opts: IntakeOptions): Prom
       continue;
     }
 
+    let related: Issue | undefined;
     if (decision.duplicateOf !== null) {
       const existing = openIssues.find((i) => i.number === decision.duplicateOf);
       const sure = decision.duplicateConfidence >= config.intake.minDuplicateConfidence;
       if (existing && !sure) {
+        // File it, but carry the suspicion forward so a human can collapse the
+        // two in one click if the model was right after all.
+        related = existing;
         info(
-          `${label} ${yellow(`unsure duplicate of #${existing.number}`)} ` +
-            `${dim(`(${decision.duplicateConfidence.toFixed(2)} < ${config.intake.minDuplicateConfidence})`)} — filing separately`,
+          `${label} ${yellow(`possibly duplicate of #${existing.number}`)} ` +
+            `${dim(`(${decision.duplicateConfidence.toFixed(2)} < ${config.intake.minDuplicateConfidence})`)} — filing separately, linked`,
         );
       }
       if (existing && sure) {
@@ -122,7 +126,7 @@ export async function runIntake(loaded: LoadedConfig, opts: IntakeOptions): Prom
       }
     }
 
-    const body = issueBody(decision, report, link, config.discord.guildId, config.discord.channelId);
+    const body = issueBody(decision, report, link, config.discord.guildId, config.discord.channelId, related);
     const labels = [
       config.github.labels.source,
       `severity:${decision.severity}`,
@@ -156,12 +160,13 @@ export async function runIntake(loaded: LoadedConfig, opts: IntakeOptions): Prom
   info(`${bold("done")} — ${filed} filed, ${duplicates} duplicate, ${skipped} skipped.`);
 }
 
-function issueBody(
+export function issueBody(
   decision: Decision,
   report: Report,
   link: string,
   guildId: string,
   channelId: string,
+  related?: Issue,
 ): string {
   const quoted = renderReport(report)
     .split("\n")
@@ -170,6 +175,14 @@ function issueBody(
 
   return [
     decision.body,
+    ...(related
+      ? [
+          "",
+          `> **Possibly related to #${related.number}** — ${related.title}`,
+          ">",
+          "> Filed separately because the reported problem looks different. Close this as a duplicate if that call was wrong.",
+        ]
+      : []),
     "",
     "---",
     "",
