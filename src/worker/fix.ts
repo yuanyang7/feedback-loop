@@ -200,7 +200,6 @@ async function runFixInner(
     cwd: worktree.path,
     artifactDir,
     playbook,
-    maxBudgetUsd: config.worker.maxRunUsd,
   };
 
   let fix: Fix | null = null;
@@ -219,6 +218,7 @@ async function runFixInner(
         ...phaseOpts,
         model: config.worker.fixModel,
         effort: config.worker.fixEffort,
+        maxBudgetUsd: config.worker.fixMaxUsd,
         allowedTools: ["Bash", "Read", "Grep", "Glob", "Write", "Edit"],
         disallowedTools: [],
       },
@@ -227,16 +227,42 @@ async function runFixInner(
     fix = fixRun.verdict;
 
     if (!fix) {
+      const sha = await lastCommit(worktree, config.target.baseBranch);
+      if (sha) {
+        // The verdict is written last, so budget exhaustion can lose the report
+        // while the change itself is committed and fine. Reporting that as a
+        // plain failure would throw away real work.
+        warn(`  no verdict, but ${sha.slice(0, 8)} is committed — keeping the worktree so a re-run can continue`);
+        await github.commentOnIssue(
+          issue.number,
+          [
+            "### ⚠️ The fix phase stopped before reporting",
+            "",
+            "```",
+            fixRun.failure ?? "unknown",
+            "```",
+            "",
+            `It had already committed \`${sha.slice(0, 8)}\` in \`.worktrees/${worktree.slug}\`, so the work is not lost.`,
+            "Re-run `feedback-loop fix` to continue from there, or review that commit directly.",
+          ].join("\n"),
+        );
+        await github.removeLabels(issue.number, ["in-progress"]);
+        log(target, issue, `stopped with work committed (${sha.slice(0, 8)})`, spent, artifactDir);
+        return null;
+      }
+      warn(`  fix phase failed: ${fixRun.failure}`);
       await escalate(github, loaded, issue, `The fix phase did not complete.\n\n\`\`\`\n${fixRun.failure}\n\`\`\``);
       log(target, issue, "fix phase failed", spent, artifactDir);
       return null;
     }
     if (fix.blockedReason !== "none") {
+      warn(`  blocked: ${fix.blockedReason}`);
       await escalate(github, loaded, issue, blockedComment(fix));
       log(target, issue, `blocked: ${fix.blockedReason}`, spent, artifactDir);
       return null;
     }
     if (!fix.implemented || !(await hasCommits(worktree, config.target.baseBranch))) {
+      warn("  reported success but committed nothing");
       await escalate(github, loaded, issue, "The fix phase reported success but committed nothing.");
       log(target, issue, "no commits", spent, artifactDir);
       return null;
@@ -250,6 +276,7 @@ async function runFixInner(
         ...phaseOpts,
         model: config.worker.reviewModel,
         effort: config.worker.reviewEffort,
+        maxBudgetUsd: config.worker.reviewMaxUsd,
         allowedTools: ["Bash", "Read", "Grep", "Glob"],
         disallowedTools: ["Edit", "Write", "NotebookEdit"],
       },
@@ -373,6 +400,13 @@ function log(target: string, issue: Issue, summary: string, costUsd: number, art
     summary: `fix #${issue.number}: ${summary}`,
     data: { issue: issue.number, costUsd, artifactDir },
   });
+}
+
+async function lastCommit(worktree: Worktree, baseBranch: string): Promise<string | null> {
+  const { stdout } = await exec("git", [
+    "-C", worktree.path, "rev-list", "-1", `origin/${baseBranch}..HEAD`,
+  ]).catch(() => ({ stdout: "" }));
+  return stdout.trim() || null;
 }
 
 async function hasCommits(worktree: Worktree, baseBranch: string): Promise<boolean> {

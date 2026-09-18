@@ -77,8 +77,11 @@ export const ConfigSchema = z.object({
       dailyBudgetUsd: z.number().positive().default(15),
       maxFixAttempts: z.number().int().positive().default(2),
       /** Triage reads code and drives the app; it is not the fix, so it stays cheap. */
-      /** Hard ceiling for a single phase. The daily budget alone is too coarse. */
-      maxRunUsd: z.number().positive().default(3),
+      /** Hard ceilings per phase. The daily budget alone is too coarse, and a
+       * fix costs several times what reading and reproducing does. */
+      triageMaxUsd: z.number().positive().default(3),
+      fixMaxUsd: z.number().positive().default(10),
+      reviewMaxUsd: z.number().positive().default(4),
       triageModel: z.string().default("claude-sonnet-5"),
       /** Writing the fix is the expensive judgement call, so it gets the better model. */
       fixModel: z.string().default("claude-opus-5"),

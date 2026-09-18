@@ -89,6 +89,8 @@ however much you found out along the way.`;
     total_cost_usd?: number;
     num_turns?: number;
     session_id?: string;
+    subtype?: string;
+    terminal_reason?: string;
   };
   try {
     envelope = JSON.parse(stdout);
@@ -114,9 +116,7 @@ however much you found out along the way.`;
       costUsd,
       turns,
       sessionId,
-      failure: envelope.is_error
-        ? `session errored: ${envelope.result ?? "unknown"}`
-        : `session ended without writing a verdict. Last message: ${(envelope.result ?? "").slice(0, 400)}`,
+      failure: describeFailure(envelope, costUsd, opts.maxBudgetUsd),
     };
   }
 
@@ -126,6 +126,25 @@ however much you found out along the way.`;
   }
   info(`  ${dim(`phase ${name}: done in ${turns} turn(s), $${costUsd.toFixed(3)}`)}`);
   return { verdict: parsed.data, costUsd, turns, sessionId };
+}
+
+/**
+ * A killed session has a null result, so the envelope's own fields are the only
+ * thing that says what happened. Reporting "unknown" when it plainly says
+ * budget_exhausted sends someone hunting for a bug that is really a setting.
+ */
+function describeFailure(
+  envelope: { is_error?: boolean; result?: string; subtype?: string; terminal_reason?: string },
+  costUsd: number,
+  budgetUsd: number,
+): string {
+  if (envelope.subtype === "error_max_budget_usd" || envelope.terminal_reason === "budget_exhausted") {
+    return `ran out of budget at $${costUsd.toFixed(2)} (cap $${budgetUsd.toFixed(2)}) before writing a verdict`;
+  }
+  if (envelope.is_error) {
+    return `session errored: ${envelope.result ?? envelope.terminal_reason ?? envelope.subtype ?? "no detail reported"}`;
+  }
+  return `session ended without writing a verdict. Last message: ${(envelope.result ?? "").slice(0, 400)}`;
 }
 
 /**

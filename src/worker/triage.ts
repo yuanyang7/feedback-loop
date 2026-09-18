@@ -138,7 +138,7 @@ export async function runTriage(
     artifactDir,
     model: config.worker.triageModel,
     effort: config.worker.triageEffort,
-    maxBudgetUsd: config.worker.maxRunUsd,
+    maxBudgetUsd: config.worker.triageMaxUsd,
     playbook,
     allowedTools: ["Bash", "Read", "Grep", "Glob", "Write", "WebFetch"],
     disallowedTools: ["Edit", "NotebookEdit"],
