@@ -46,6 +46,29 @@ For the model call, pick a backend in `intake.backend`:
 Either way the model only ever classifies text. It gets no tools, runs in an empty directory so no
 nearby `CLAUDE.md` or MCP config leaks in, and cannot act on what it reads.
 
+### Which backend, measured
+
+`cli` is convenient; `api` is the right choice once this runs on a timer. Spawning `claude -p`
+loads a whole coding agent to read a few sentences of chat, and you pay for its system prompt and
+tool definitions on every call. Measured with a trivial prompt — nothing of ours in it:
+
+| | input tokens | notional cost |
+|---|---|---|
+| `claude -p`, default system prompt | 42,521 | $0.1702 |
+| `claude -p`, `--system-prompt` | 33,932 | $0.1358 |
+| `claude -p`, `+ --exclude-dynamic-system-prompt-sections` (what we send) | 9,109 new + 24,826 cached | $0.0415 |
+
+A real classification of one report against 50 open issues came to $0.088, so roughly **90% of
+that is harness overhead, not the classification**. The `api` backend sends the same ~5k-token
+prompt with no harness and caches the system prompt, landing around $0.01–0.015 per call.
+
+Two caveats. The cost figures the CLI reports are *notional* — on a Claude subscription this is
+quota, not a bill — but it is quota spent on nothing useful. And the flag rows above are not
+perfectly isolated, since the third benefited from cache the first two warmed.
+
+Ticks with no new messages return before the model call, so idle polling is free under either
+backend.
+
 ```bash
 git clone <this repo> && cd feedback-loop && npm install
 ./bin/feedback-loop init /path/to/your/repo
