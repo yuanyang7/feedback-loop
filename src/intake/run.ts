@@ -9,7 +9,8 @@ import { encodeFooter } from "./footer.js";
 import { GitHubClient, type Issue } from "./github.js";
 import { anchorOf, groupMessages, renderReport, type Report } from "./group.js";
 import {
-  activeRun, claimRun, describeRejection, HELP, isOperator, parseCommand, startWorker,
+  activeRuns, claimRun, concurrencyRefusal, describeRejection, HELP, isOperator, parseCommand,
+  startWorker,
 } from "./commands.js";
 
 export interface IntakeOptions {
@@ -237,9 +238,9 @@ async function handleCommands(
       continue;
     }
 
-    const running = activeRun(config.target.name);
-    if (running) {
-      await reply(describeRejection(command, `\`${running.what}\` is already running (started ${running.at.slice(11, 16)} UTC).`));
+    const busy = concurrencyRefusal(config.target.name, command.issue, config.worker.maxConcurrentRuns);
+    if (busy) {
+      await reply(describeRejection(command, busy));
       continue;
     }
 
@@ -258,7 +259,7 @@ async function handleCommands(
     }
 
     const { pid, logPath } = startWorker(config.target.name, repoPath, command, channel);
-    claimRun(config.target.name, pid, `${command.kind} #${command.issue}`);
+    claimRun(config.target.name, pid, `${command.kind} #${command.issue}`, command.issue);
     info(`  ${bold(`started ${command.kind} #${command.issue}`)} ${dim(`pid ${pid}`)}`);
     await reply(
       `Starting \`${command.kind}\` on #${command.issue}. This takes ten minutes or more — I'll reply when it's done.\n` +
@@ -367,9 +368,11 @@ async function statusLine(loaded: LoadedConfig): Promise<string> {
     github.listPullRequests({ state: "open" }),
   ]);
   const agentPrs = prs.filter((p) => (p.labels ?? []).some((l) => l.name === labels.agentPr));
-  const running = activeRun(loaded.config.target.name);
+  const running = activeRuns(loaded.config.target.name);
   return [
-    running ? `🔧 running: \`${running.what}\`` : "💤 nothing running",
+    running.length > 0
+      ? `🔧 running: ${running.map((r) => `\`${r.what}\``).join(", ")}`
+      : "💤 nothing running",
     `**${ready.length}** agent-ready · **${readyToFix.length}** ready-to-fix · **${blocked.length}** need you`,
     agentPrs.length > 0
       ? `Open PRs: ${agentPrs.map((p) => `[#${p.number}](${p.url})`).join(", ")}`

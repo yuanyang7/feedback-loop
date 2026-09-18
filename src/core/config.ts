@@ -94,6 +94,10 @@ export const ConfigSchema = z.object({
   worker: z
     .object({
       maxOpenPRs: z.number().int().positive().default(3),
+      /** Bounded by the machine, not by correctness: each run wants its own
+       * database, dev server and full CI pass. Different issues never share a
+       * worktree, so raising this is safe, just contended. */
+      maxConcurrentRuns: z.number().int().positive().default(1),
       maxRunsPerDay: z.number().int().positive().default(10),
       dailyBudgetUsd: z.number().positive().default(15),
       maxFixAttempts: z.number().int().positive().default(2),

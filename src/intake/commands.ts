@@ -61,34 +61,83 @@ export function isOperator(message: DiscordMessage, operatorIds: string[]): bool
 }
 
 /**
- * One worker run at a time. Two concurrent runs would fight over the same
- * worktree and double the spend with nobody watching.
+ * Runs are tracked per issue, not globally. Two runs on the same issue would
+ * fight over one worktree; two on different issues would not. What does bound
+ * them is the machine — each run wants its own database, dev server and full
+ * CI pass — so worker.maxConcurrentRuns exists, defaulting to 1.
  */
+export interface RunLock {
+  pid: number;
+  what: string;
+  at: string;
+  /** Absent in locks written before per-issue tracking; recovered from `what`. */
+  issue?: number;
+}
+
 function lockPath(target: string): string {
   return join(stateDir(target), "worker.lock");
 }
 
-export function activeRun(target: string): { pid: number; what: string; at: string } | null {
+/** Live runs, with entries for dead processes pruned as a side effect. */
+export function activeRuns(target: string): RunLock[] {
   const path = lockPath(target);
-  if (!existsSync(path)) return null;
+  if (!existsSync(path)) return [];
+
+  let entries: RunLock[];
   try {
-    const lock = JSON.parse(readFileSync(path, "utf8")) as { pid: number; what: string; at: string };
-    process.kill(lock.pid, 0); // throws if the process is gone
-    return lock;
+    const parsed: unknown = JSON.parse(readFileSync(path, "utf8"));
+    // Tolerate the single-object form this used to write.
+    entries = Array.isArray(parsed) ? parsed : [parsed as RunLock];
   } catch {
-    unlinkSync(path); // stale lock from a run that died
-    return null;
+    unlinkSync(path);
+    return [];
   }
+
+  const live = entries.filter((lock) => {
+    try {
+      process.kill(lock.pid, 0);
+      return true;
+    } catch {
+      return false;
+    }
+  });
+  if (live.length !== entries.length) writeFileSync(path, JSON.stringify(live));
+  return live;
 }
 
-export function claimRun(target: string, pid: number, what: string): void {
+export function claimRun(target: string, pid: number, what: string, issue: number): void {
   mkdirSync(stateDir(target), { recursive: true });
-  writeFileSync(lockPath(target), JSON.stringify({ pid, what, at: new Date().toISOString() }));
+  const live = activeRuns(target);
+  writeFileSync(lockPath(target), JSON.stringify([...live, { pid, what, at: new Date().toISOString(), issue }]));
 }
 
-export function releaseRun(target: string): void {
-  const path = lockPath(target);
-  if (existsSync(path)) unlinkSync(path);
+export function releaseRun(target: string, pid = process.pid): void {
+  const remaining = activeRuns(target).filter((lock) => lock.pid !== pid);
+  writeFileSync(lockPath(target), JSON.stringify(remaining));
+}
+
+/** Why this run cannot start right now, or null. */
+export function concurrencyRefusal(
+  target: string,
+  issue: number,
+  maxConcurrent: number,
+): string | null {
+  const live = activeRuns(target);
+  // Locks written before this field existed still name their issue in `what`.
+  const issueOf = (lock: RunLock): number =>
+    lock.issue ?? Number(/#(\d+)/.exec(lock.what)?.[1] ?? NaN);
+  const sameIssue = live.find((lock) => issueOf(lock) === issue);
+  if (sameIssue) {
+    return `\`${sameIssue.what}\` is already running on that issue (started ${sameIssue.at.slice(11, 16)} UTC).`;
+  }
+  if (live.length >= maxConcurrent) {
+    const names = live.map((lock) => `\`${lock.what}\``).join(", ");
+    return (
+      `${names} ${live.length === 1 ? "is" : "are"} running, and this machine is set to ` +
+      `${maxConcurrent} at a time. Raise \`worker.maxConcurrentRuns\` to overlap them.`
+    );
+  }
+  return null;
 }
 
 /**
