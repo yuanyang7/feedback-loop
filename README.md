@@ -119,6 +119,12 @@ Mention the bot in the channel:
 @bot status          queue, spend, what is waiting on you
 ```
 
+Commands work in the feedback channel, and in any channel listed under `discord.commandChannelIds`
+— a DM with the bot is the quiet place to drive this from a phone. Those channels are polled for
+commands only and never for reports, so conversation there cannot become issues. A mention is only
+required where it disambiguates: in a channel that exists solely for commands, typing one would be
+ceremony.
+
 A `tick` picks the command up, starts the run detached, and replies when it finishes — runs take
 ten minutes or more, so nothing is held open waiting. One run at a time, guarded by a lock that
 clears itself if the process dies.

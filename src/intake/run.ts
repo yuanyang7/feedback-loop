@@ -32,6 +32,10 @@ export async function runIntake(loaded: LoadedConfig, opts: IntakeOptions): Prom
   const state = readIntakeState(target);
   let cursor = state.cursor;
 
+  // Command-only channels are polled first and independently: they carry no
+  // reports, so nothing here reaches the classifier or costs anything.
+  await pollCommandChannels(loaded, discord, state, opts.dryRun);
+
   // First run: adopt the newest message as the cursor rather than filing the
   // entire channel history as issues. --backfill opts into some history.
   if (cursor === null && opts.backfill === 0) {
@@ -189,14 +193,15 @@ async function handleCommands(
   discord: DiscordClient,
   messages: DiscordMessage[],
   dryRun: boolean,
+  channel: string = loaded.config.discord.channelId,
+  requireMention = true,
 ): Promise<DiscordMessage[]> {
   const { config, repoPath } = loaded;
   const botIds = config.discord.mentionTriggerIds;
-  const channel = config.discord.channelId;
   const remaining: DiscordMessage[] = [];
 
   for (const message of messages) {
-    const command = parseCommand(message, botIds);
+    const command = parseCommand(message, botIds, { requireMention });
     if (!command) {
       remaining.push(message);
       continue;
@@ -242,6 +247,45 @@ async function handleCommands(
     );
   }
   return remaining;
+}
+
+/**
+ * Each command channel keeps its own cursor, so a reply in one never re-runs a
+ * command from another, and a first poll adopts the newest message rather than
+ * replaying whatever was already there.
+ */
+async function pollCommandChannels(
+  loaded: LoadedConfig,
+  discord: DiscordClient,
+  state: ReturnType<typeof readIntakeState>,
+  dryRun: boolean,
+): Promise<void> {
+  const channels = loaded.config.discord.commandChannelIds;
+  if (channels.length === 0) return;
+
+  const cursors = { ...(state.commandCursors ?? {}) };
+  let changed = false;
+
+  for (const channel of channels) {
+    const seen = cursors[channel] ?? null;
+    const messages = await discord
+      .fetchMessages(channel, seen, seen ? 50 : 1)
+      .catch((error: Error) => {
+        warn(`command channel ${channel}: ${error.message.slice(0, 120)}`);
+        return [] as DiscordMessage[];
+      });
+    if (messages.length === 0) continue;
+
+    if (seen !== null) {
+      await handleCommands(loaded, discord, messages, dryRun, channel, false);
+    }
+    cursors[channel] = messages.at(-1)!.id;
+    changed = true;
+  }
+
+  if (changed && !dryRun) {
+    writeIntakeState(loaded.config.target.name, { ...state, commandCursors: cursors });
+  }
 }
 
 async function statusLine(loaded: LoadedConfig): Promise<string> {

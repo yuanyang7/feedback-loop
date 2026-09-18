@@ -42,6 +42,12 @@ export const ConfigSchema = z.object({
      * roles. Empty means chat cannot start anything.
      */
     operatorIds: z.array(z.string()).default([]),
+    /**
+     * Extra channels polled for commands only — a DM is the natural place to
+     * drive this from a phone. Reports are never taken from here: intake stays
+     * scoped to channelId so ordinary conversation cannot become issues.
+     */
+    commandChannelIds: z.array(z.string()).default([]),
   }),
   github: z.object({
     /** File holding a GitHub token. Falls back to the ambient `gh` login. */

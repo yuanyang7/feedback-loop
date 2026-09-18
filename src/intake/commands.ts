@@ -30,11 +30,18 @@ const VERBS = /^(triage|fix|status|help)\b/i;
  * report. Anything that is not an exact match is not a command — a near miss
  * must not be guessed at.
  */
-export function parseCommand(message: DiscordMessage, botIds: string[]): Command | null {
+export function parseCommand(
+  message: DiscordMessage,
+  botIds: string[],
+  opts: { requireMention?: boolean } = {},
+): Command | null {
   let text = message.content.trim();
   const mentioned = (message.mentions ?? []).some((m) => botIds.includes(m.id));
   for (const id of botIds) text = text.replace(new RegExp(`<@!?${id}>`, "g"), "").trim();
-  if (!mentioned) return null;
+  // In a shared channel a mention is what distinguishes an instruction from
+  // conversation. In a channel that exists only for commands there is nothing
+  // to distinguish it from, so typing one would just be ceremony.
+  if (opts.requireMention !== false && !mentioned) return null;
 
   const match = VERBS.exec(text);
   if (!match) return null;

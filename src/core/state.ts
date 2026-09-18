@@ -6,6 +6,8 @@ export interface IntakeState {
   /** Discord snowflake of the last message intake has processed. */
   cursor: string | null;
   lastTickAt: string | null;
+  /** Cursors for command-only channels, keyed by channel id. */
+  commandCursors?: Record<string, string>;
 }
 
 export interface RunLogEntry {
@@ -45,10 +47,18 @@ export function readIntakeState(target: string): IntakeState {
   }
 }
 
-export function writeIntakeState(target: string, state: IntakeState): void {
+/**
+ * Merges rather than replaces. Several call sites update one field each — the
+ * main cursor, the per-channel command cursors — and a plain overwrite meant
+ * whichever wrote last silently erased the others. Merging makes that class of
+ * bug impossible instead of relying on every caller remembering to carry the
+ * whole object.
+ */
+export function writeIntakeState(target: string, state: Partial<IntakeState>): void {
   const path = intakeStatePath(target);
   mkdirSync(dirname(path), { recursive: true });
-  writeFileSync(path, `${JSON.stringify(state, null, 2)}\n`);
+  const merged: IntakeState = { ...readIntakeState(target), ...state };
+  writeFileSync(path, `${JSON.stringify(merged, null, 2)}\n`);
 }
 
 export function appendRunLog(entry: RunLogEntry): void {
