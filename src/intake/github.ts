@@ -23,6 +23,7 @@ export interface PullRequest {
   url: string;
   state: "OPEN" | "MERGED" | "CLOSED";
   headRefName: string;
+  labels?: Array<{ name: string }>;
 }
 
 export class GitHubClient {
@@ -91,7 +92,7 @@ export class GitHubClient {
       "pr", "list", "--repo", this.repo,
       "--state", opts.state ?? "open",
       "--limit", String(opts.limit ?? 100),
-      "--json", "number,title,url,state,headRefName",
+      "--json", "number,title,url,state,headRefName,labels",
     ]);
     return JSON.parse(out) as PullRequest[];
   }

@@ -6,6 +6,7 @@ import { bold, cyan, dim, fail, green, info, yellow } from "./core/log.js";
 import { readIntakeState, readRunLog } from "./core/state.js";
 import { runIntake } from "./intake/run.js";
 import { runReconcile } from "./intake/reconcile.js";
+import { runTriage } from "./worker/triage.js";
 import { STATE_EMOJI } from "./intake/emoji.js";
 import { readSecret } from "./core/config.js";
 import { GitHubClient } from "./intake/github.js";
@@ -17,19 +18,26 @@ Usage:
   feedback-loop intake [dir]          One intake tick: new messages -> issues
   feedback-loop reconcile [dir]       Sync chat reactions with GitHub state
   feedback-loop tick [dir]            intake + reconcile
+  feedback-loop triage [dir]          Reproduce + size one agent-ready issue (never fixes)
   feedback-loop status [dir]          Queue, recent runs, and caps
   feedback-loop labels [dir]          Create the labels this tool expects
 
 Options:
   --dry-run        Classify and print; create nothing, react to nothing
   --backfill N     On a fresh cursor, process the last N messages (default: skip history)
+  --issue N        triage: pick this issue instead of the highest-severity one
 `;
 
 async function main(): Promise<number> {
   const argv = process.argv.slice(2);
   const command = argv[0];
   const flags = new Set(argv.filter((a) => a.startsWith("--")));
-  const positional = argv.slice(1).filter((a) => !a.startsWith("--"));
+  const valueFlags = new Set(["--backfill", "--issue"]);
+  const positional = argv.slice(1).filter((a, i) => {
+    if (a.startsWith("--")) return false;
+    const previous = argv.slice(1)[i - 1];
+    return previous === undefined || !valueFlags.has(previous);
+  });
   const dir = positional[0] ?? process.cwd();
 
   const backfillIndex = argv.indexOf("--backfill");
@@ -51,6 +59,12 @@ async function main(): Promise<number> {
       const loaded = loadConfig(dir);
       await runIntake(loaded, { dryRun, backfill });
       await runReconcile(loaded, { dryRun });
+      return 0;
+    }
+    case "triage": {
+      const issueIndex = argv.indexOf("--issue");
+      const issueNumber = issueIndex >= 0 ? Number(argv[issueIndex + 1]) : undefined;
+      await runTriage(loadConfig(dir), { dryRun, issueNumber });
       return 0;
     }
     case "status":
@@ -103,9 +117,12 @@ async function status(dir: string): Promise<number> {
   console.log(`    ${String(sourced.length).padStart(3)}  from chat, open`);
   console.log(`    ${String(ready.length).padStart(3)}  ${cyan("agent-ready")}`);
   console.log(`    ${String(blocked.length).padStart(3)}  ${yellow("needs-decision")}`);
-  console.log(`    ${String(openPRs.length).padStart(3)}  open PRs ${dim(`(cap ${config.worker.maxOpenPRs})`)}`);
+  const agentPRs = openPRs.filter((pr) => (pr.labels ?? []).some((l) => l.name === "agent-pr"));
+  console.log(
+    `    ${String(agentPRs.length).padStart(3)}  agent PRs ${dim(`(cap ${config.worker.maxOpenPRs}; ${openPRs.length} open in total)`)}`,
+  );
 
-  const capHit = openPRs.length >= config.worker.maxOpenPRs;
+  const capHit = agentPRs.length >= config.worker.maxOpenPRs;
   console.log(
     `\n  ${bold("worker")} ${capHit ? yellow("paused — PR queue is full, drain it to resume") : green("free to pick up work")}`,
   );
