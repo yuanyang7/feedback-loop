@@ -34,14 +34,17 @@ export async function runIntake(loaded: LoadedConfig, opts: IntakeOptions): Prom
   if (cursor === null && opts.backfill === 0) {
     const recent = await discord.fetchMessages(config.discord.channelId, null, 1);
     const newest = recent.at(-1);
-    if (newest) {
-      writeIntakeState(target, { cursor: newest.id, lastTickAt: new Date().toISOString() });
-      info(`No cursor yet — starting from message ${dim(newest.id)}. Use --backfill N to include history.`);
-      return;
-    }
+    writeIntakeState(target, { cursor: newest?.id ?? null, lastTickAt: new Date().toISOString() });
+    info(
+      newest
+        ? `No cursor yet — starting from message ${dim(newest.id)}. Use --backfill N to include history.`
+        : "Channel is empty — nothing to adopt as a cursor yet.",
+    );
+    return;
   }
 
-  const limit = cursor === null ? Math.min(opts.backfill, 100) : config.intake.lookbackLimit;
+  // Discord rejects limit=0, which a bare --backfill 0 would otherwise produce.
+  const limit = Math.max(1, cursor === null ? Math.min(opts.backfill, 100) : config.intake.lookbackLimit);
   const messages = await discord.fetchMessages(config.discord.channelId, cursor, limit);
   if (messages.length === 0) {
     info("No new messages.");
