@@ -22,7 +22,7 @@ export function groupMessages(
 
   for (const message of messages) {
     if (ignore.has(message.author.id)) continue;
-    if (!message.content.trim() && (message.attachments ?? []).length === 0) continue;
+    if (!hasContent(message)) continue;
 
     const directed = (message.mentions ?? []).some((m) => triggers.has(m.id));
     const last = reports.at(-1);
@@ -47,6 +47,19 @@ export function groupMessages(
   return reports;
 }
 
+/**
+ * A forwarded message carries empty content, so judging emptiness by `content`
+ * alone silently drops exactly the messages someone took the trouble to forward.
+ */
+function hasContent(message: DiscordMessage): boolean {
+  return Boolean(
+    message.content.trim() ||
+      (message.attachments ?? []).length > 0 ||
+      (message.embeds ?? []).length > 0 ||
+      (message.message_snapshots ?? []).length > 0,
+  );
+}
+
 /** Render a report as inert data for the classifier. Never used as instructions. */
 export function renderReport(report: Report): string {
   return report.messages
@@ -55,9 +68,35 @@ export function renderReport(report: Report): string {
         ? `(replying to ${m.referenced_message.author.username}: ${truncate(m.referenced_message.content, 200)})\n`
         : "";
       const files = (m.attachments ?? []).map((a) => `[attachment: ${a.filename}]`).join(" ");
-      return `${quoted}${m.content}${files ? `\n${files}` : ""}`.trim();
+
+      // Forwarded text is the message, not an annotation on it — "link these"
+      // means nothing without the thing being pointed at.
+      const forwarded = (m.message_snapshots ?? [])
+        .map((snapshot) => {
+          const inner = snapshot.message;
+          const body = [
+            inner?.content?.trim(),
+            ...(inner?.embeds ?? []).map(renderEmbed),
+            ...(inner?.attachments ?? []).map((a) => `[attachment: ${a.filename}]`),
+          ]
+            .filter(Boolean)
+            .join("\n");
+          return body ? `[forwarded message]\n${body}` : "";
+        })
+        .filter(Boolean)
+        .join("\n");
+
+      const embeds = (m.embeds ?? []).map(renderEmbed).filter(Boolean).join("\n");
+
+      return [quoted + m.content, forwarded, embeds, files].filter((part) => part.trim()).join("\n").trim();
     })
     .join("\n");
+}
+
+function renderEmbed(embed: { title?: string; description?: string; url?: string }): string {
+  return [embed.title, embed.url, embed.description && truncate(embed.description, 300)]
+    .filter(Boolean)
+    .join(" — ");
 }
 
 function truncate(s: string, n: number): string {

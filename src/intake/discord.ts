@@ -15,6 +15,20 @@ export interface DiscordMessage {
   referenced_message?: { id: string; content: string; author: { username: string } } | null;
   mentions?: Array<{ id: string; username: string }>;
   attachments?: Array<{ filename: string; content_type?: string; url: string }>;
+  /** Link previews, and the cards Discord builds for a forwarded link. */
+  embeds?: Array<{ title?: string; description?: string; url?: string }>;
+  /**
+   * Discord's forward feature. The carrier message has empty content and the
+   * real text lives in here — so a report forwarded rather than retyped is
+   * invisible to anything reading only `content`.
+   */
+  message_snapshots?: Array<{
+    message?: {
+      content?: string;
+      attachments?: Array<{ filename: string }>;
+      embeds?: Array<{ title?: string; description?: string; url?: string }>;
+    };
+  }>;
 }
 
 export class DiscordClient {
