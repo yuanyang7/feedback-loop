@@ -142,6 +142,7 @@ async function labels(dir: string): Promise<number> {
     [config.github.labels.agentReady, "0E8A16", "Cleared for an autonomous fix attempt"],
     [config.github.labels.needsDecision, "D93F0B", "Needs a human decision before any fix"],
     ["in-progress", "FBCA04", "A worker run is currently working on this"],
+    ["agent-pr", "5319E7", "Opened by a worker run; awaiting human review and merge"],
     ["severity:high", "B60205", "Data loss, or a core flow is unusable"],
     ["severity:medium", "D93F0B", "A real feature is broken for some users"],
     ["severity:low", "FEF2C0", "Cosmetic, rare, or a minor annoyance"],
