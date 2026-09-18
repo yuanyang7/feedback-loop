@@ -176,7 +176,7 @@ async function runFixInner(
   const playbook = readFileSync(playbookPath, "utf8");
 
   // Triage wrote its findings on the issue. Reuse them rather than rediscovering.
-  const triageNotes = await lastTriageComment(github, issue.number);
+  const triageNotes = await lastTriageComment(config.target.repo, issue.number);
 
   if (opts.dryRun) {
     console.log(`\n${dim("[dry-run] would run the fix phase with this prompt:")}\n`);
@@ -383,9 +383,11 @@ async function hasCommits(worktree: Worktree, baseBranch: string): Promise<boole
 }
 
 /** Triage's findings live on the issue; the fix phase should not rediscover them. */
-async function lastTriageComment(github: GitHubClient, issueNumber: number): Promise<string> {
+async function lastTriageComment(repo: string, issueNumber: number): Promise<string> {
+  // --repo matters: without it this resolves against whatever directory the
+  // command happened to be run from, which is only the right repo by luck.
   const { stdout } = await exec("gh", [
-    "issue", "view", String(issueNumber), "--json", "comments",
+    "issue", "view", String(issueNumber), "--repo", repo, "--json", "comments",
     "--jq", '[.comments[] | select(.body | test("Reproduced|Triage")) | .body] | last // ""',
   ]).catch(() => ({ stdout: "" }));
   return stdout.trim();
