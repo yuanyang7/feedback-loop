@@ -6,7 +6,8 @@
  * that look like the agent said something it did not.
  */
 import { spawn } from "node:child_process";
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
 import { join } from "node:path";
 import { z } from "zod";
 import { dim, info } from "../core/log.js";
@@ -15,6 +16,8 @@ export interface PhaseRun<T> {
   verdict: T | null;
   costUsd: number;
   turns: number;
+  /** Claude Code session id — resumable, and visible in the app's history. */
+  sessionId?: string;
   /** Set when the session ended without writing a verdict. */
   failure?: string;
 }
@@ -67,7 +70,6 @@ however much you found out along the way.`;
       "--append-system-prompt", opts.playbook,
       "--permission-mode", "auto",
       "--permission-prompts", "none",
-      "--no-session-persistence",
       "--allowedTools", ...opts.allowedTools,
       "--disallowedTools", ...opts.disallowedTools,
     ],
@@ -77,21 +79,37 @@ however much you found out along the way.`;
 
   writeFileSync(transcriptPath, stdout);
 
-  let envelope: { is_error?: boolean; result?: string; total_cost_usd?: number; num_turns?: number };
+  let envelope: {
+    is_error?: boolean;
+    result?: string;
+    total_cost_usd?: number;
+    num_turns?: number;
+    session_id?: string;
+  };
   try {
     envelope = JSON.parse(stdout);
   } catch {
-    return { verdict: null, costUsd: 0, turns: 0, failure: `no JSON envelope: ${stdout.slice(0, 300)}` };
+  return { verdict: null, costUsd: 0, turns: 0, failure: `no JSON envelope: ${stdout.slice(0, 300)}` };
   }
 
   const costUsd = envelope.total_cost_usd ?? 0;
   const turns = envelope.num_turns ?? 0;
+  const sessionId = envelope.session_id;
+
+  // The --output-format json envelope carries only the final message, so the
+  // turn-by-turn record has to come from the persisted session file. Copy it
+  // in rather than pointing at it: sessions get cleaned up, artifacts should not.
+  if (sessionId) {
+    const source = findSessionFile(sessionId);
+    if (source) copyFileSync(source, join(opts.artifactDir, `${name}.session.jsonl`));
+  }
 
   if (!existsSync(verdictPath)) {
     return {
       verdict: null,
       costUsd,
       turns,
+      sessionId,
       failure: envelope.is_error
         ? `session errored: ${envelope.result ?? "unknown"}`
         : `session ended without writing a verdict. Last message: ${(envelope.result ?? "").slice(0, 400)}`,
@@ -100,10 +118,25 @@ however much you found out along the way.`;
 
   const parsed = schema.safeParse(JSON.parse(readFileSync(verdictPath, "utf8")));
   if (!parsed.success) {
-    return { verdict: null, costUsd, turns, failure: `verdict failed validation: ${parsed.error.message}` };
+    return { verdict: null, costUsd, turns, sessionId, failure: `verdict failed validation: ${parsed.error.message}` };
   }
   info(`  ${dim(`phase ${name}: done in ${turns} turn(s), $${costUsd.toFixed(3)}`)}`);
-  return { verdict: parsed.data, costUsd, turns };
+  return { verdict: parsed.data, costUsd, turns, sessionId };
+}
+
+/**
+ * Sessions live under a directory named after the cwd they ran in, but the
+ * exact mangling is Claude Code's business — so search for the id instead of
+ * reconstructing the path.
+ */
+function findSessionFile(sessionId: string): string | null {
+  const root = join(homedir(), ".claude", "projects");
+  if (!existsSync(root)) return null;
+  for (const dir of readdirSync(root)) {
+    const candidate = join(root, dir, `${sessionId}.jsonl`);
+    if (existsSync(candidate) && statSync(candidate).isFile()) return candidate;
+  }
+  return null;
 }
 
 function spawnClaude(args: string[], prompt: string, cwd: string): Promise<string> {

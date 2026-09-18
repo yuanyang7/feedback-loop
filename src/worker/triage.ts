@@ -140,7 +140,16 @@ export async function runTriage(
   const verdict = run.verdict;
   const summary = verdict
     ? renderVerdict(verdict, run, artifactDir)
-    : `Triage did not complete.\n\n\`\`\`\n${run.failure ?? "unknown"}\n\`\`\``;
+    : [
+        "### ⚠️ Triage did not complete",
+        "",
+        "```",
+        run.failure ?? "unknown",
+        "```",
+        "",
+        `Artifacts: \`${artifactDir}\``,
+        ...(run.sessionId ? [`Session: \`claude --resume ${run.sessionId}\``] : []),
+      ].join("\n");
 
   await github.commentOnIssue(issue.number, summary);
 
@@ -168,6 +177,7 @@ export async function runTriage(
       turns: run.turns,
       reproduced: verdict?.reproduced ?? null,
       size: verdict?.size ?? null,
+      sessionId: run.sessionId ?? null,
       artifactDir,
     },
   });
@@ -217,7 +227,11 @@ async function pickIssue(
   );
 }
 
-function renderVerdict(verdict: Verdict, run: { costUsd: number; turns: number }, artifactDir: string): string {
+function renderVerdict(
+  verdict: Verdict,
+  run: { costUsd: number; turns: number; sessionId?: string },
+  artifactDir: string,
+): string {
   const head = verdict.reproduced
     ? "### ✅ Reproduced"
     : "### ❓ Could not reproduce";
@@ -243,10 +257,22 @@ function renderVerdict(verdict: Verdict, run: { costUsd: number; turns: number }
     lines.push("", "**Likely files**", "", ...verdict.affectedPaths.map((p) => `- \`${p}\``));
   }
 
+  // Everything needed to audit the run rather than take its word for it.
   lines.push(
     "",
-    `<sub>Triage by feedback-loop — ${run.turns} turn(s), $${run.costUsd.toFixed(3)}. ` +
-      `Artifacts: \`${artifactDir}\`. No source files were changed.</sub>`,
+    "<details><summary>Run details</summary>",
+    "",
+    `- ${run.turns} turn(s), $${run.costUsd.toFixed(3)}`,
+    `- Artifacts: \`${artifactDir}\``,
+    ...(run.sessionId
+      ? [
+          `- Session: \`${run.sessionId}\` — replay it with \`claude --resume ${run.sessionId}\``,
+          `- Full turn-by-turn transcript: \`${artifactDir}/triage.session.jsonl\``,
+        ]
+      : ["- No session id was reported, so there is no replayable transcript for this run."]),
+    "- No source files were changed.",
+    "",
+    "</details>",
   );
   return lines.join("\n");
 }
