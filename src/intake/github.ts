@@ -93,6 +93,14 @@ export class GitHubClient {
     await this.gh(["issue", "edit", String(number), "--repo", this.repo, "--add-label", labels.join(",")]);
   }
 
+  async removeLabels(number: number, labels: string[]): Promise<void> {
+    if (labels.length === 0) return;
+    await this.gh([
+      "issue", "edit", String(number), "--repo", this.repo,
+      "--remove-label", labels.join(","),
+    ]).catch(() => undefined); // a label that was never applied is not an error
+  }
+
   /** Create a label if it does not exist. Idempotent. */
   async ensureLabel(name: string, color: string, description: string): Promise<void> {
     await this.gh([

@@ -74,6 +74,8 @@ export const ConfigSchema = z.object({
       dailyBudgetUsd: z.number().positive().default(15),
       maxFixAttempts: z.number().int().positive().default(2),
       /** Triage reads code and drives the app; it is not the fix, so it stays cheap. */
+      /** Hard ceiling for a single phase. The daily budget alone is too coarse. */
+      maxRunUsd: z.number().positive().default(3),
       triageModel: z.string().default("claude-sonnet-5"),
       triageEffort: z.enum(["low", "medium", "high", "xhigh", "max"]).default("high"),
       denyPaths: z.array(z.string()).default(DEFAULT_DENY_PATHS),

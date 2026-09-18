@@ -126,6 +126,7 @@ export async function runTriage(
     artifactDir,
     model: config.worker.triageModel,
     effort: config.worker.triageEffort,
+    maxBudgetUsd: config.worker.maxRunUsd,
     playbook,
     allowedTools: ["Bash", "Read", "Grep", "Glob", "Write", "WebFetch"],
     disallowedTools: ["Edit", "NotebookEdit"],
@@ -157,10 +158,12 @@ export async function runTriage(
   if (safeToFix) {
     info(`  ${green("reproduced")} — size ${verdict.size}; ready for a fix attempt`);
     await react(loaded, issue, "working");
+    // in-progress stays: the worktree is kept and a fix phase will pick it up.
   } else {
     const why = verdict?.blockedReason ?? "triage-failed";
     info(`  ${yellow("escalating")} — ${why}`);
     await github.addLabels(issue.number, [config.github.labels.needsDecision]);
+    await github.removeLabels(issue.number, ["in-progress"]);
     await react(loaded, issue, "needsDecision");
     // Nothing was changed and nothing will be, so do not leave a worktree behind.
     if (clean) await removeWorktree(repoPath, worktree);

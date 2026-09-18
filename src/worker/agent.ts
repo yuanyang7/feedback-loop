@@ -29,6 +29,8 @@ export interface PhaseOptions {
   artifactDir: string;
   model: string;
   effort: string;
+  /** Passed to the session as a hard spend ceiling. */
+  maxBudgetUsd: number;
   /** Appended to the default system prompt — normally the repo's playbook. */
   playbook: string;
   allowedTools: string[];
@@ -66,6 +68,7 @@ however much you found out along the way.`;
       "-p",
       "--model", opts.model,
       "--effort", opts.effort,
+      "--max-budget-usd", String(opts.maxBudgetUsd),
       "--output-format", "json",
       "--append-system-prompt", opts.playbook,
       "--permission-mode", "auto",
