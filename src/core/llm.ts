@@ -27,8 +27,10 @@ export interface Classifier {
   complete<T>(opts: { system: string; user: string }, schema: z.ZodType<T>): Promise<CompletionResult<T>>;
 }
 
-export function makeClassifier(backend: BackendName, model: string): Classifier {
-  return backend === "api" ? new ApiClassifier(model) : new CliClassifier(model);
+export type Effort = "low" | "medium" | "high" | "xhigh" | "max";
+
+export function makeClassifier(backend: BackendName, model: string, effort: Effort = "low"): Classifier {
+  return backend === "api" ? new ApiClassifier(model, effort) : new CliClassifier(model, effort);
 }
 
 /** Tools are irrelevant to classification, and a tool-less run cannot be steered into acting. */
@@ -38,7 +40,10 @@ const BLOCKED_TOOLS = [
 ];
 
 class CliClassifier implements Classifier {
-  constructor(private readonly model: string) {}
+  constructor(
+    private readonly model: string,
+    private readonly effort: Effort,
+  ) {}
 
   async complete<T>(
     opts: { system: string; user: string },
@@ -58,6 +63,7 @@ class CliClassifier implements Classifier {
         [
           "-p",
           "--model", this.model,
+          "--effort", this.effort,
           "--output-format", "json",
           "--system-prompt", opts.system,
           "--exclude-dynamic-system-prompt-sections",
@@ -114,7 +120,10 @@ function run(
 }
 
 class ApiClassifier implements Classifier {
-  constructor(private readonly model: string) {}
+  constructor(
+    private readonly model: string,
+    private readonly effort: Effort,
+  ) {}
 
   async complete<T>(
     opts: { system: string; user: string },
@@ -129,7 +138,7 @@ class ApiClassifier implements Classifier {
       model: this.model,
       max_tokens: 8000,
       system: [{ type: "text", text: opts.system, cache_control: { type: "ephemeral" } }],
-      output_config: { format: zodOutputFormat(schema as z.ZodType), effort: "low" },
+      output_config: { format: zodOutputFormat(schema as z.ZodType), effort: this.effort },
       messages: [{ role: "user", content: opts.user }],
     });
     if (response.parsed_output == null) {

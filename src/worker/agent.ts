@@ -25,6 +25,7 @@ export interface PhaseOptions {
   /** Where the transcript and verdict are written. Outside the worktree. */
   artifactDir: string;
   model: string;
+  effort: string;
   /** Appended to the default system prompt — normally the repo's playbook. */
   playbook: string;
   allowedTools: string[];
@@ -55,12 +56,13 @@ ${JSON.stringify(z.toJSONSchema(schema), null, 2)}
 Writing that file is how you report your result. A session that ends without it has failed,
 however much you found out along the way.`;
 
-  info(`  ${dim(`phase ${name}: starting (${opts.model})`)}`);
+  info(`  ${dim(`phase ${name}: starting (${opts.model}, effort ${opts.effort})`)}`);
 
   const stdout = await spawnClaude(
     [
       "-p",
       "--model", opts.model,
+      "--effort", opts.effort,
       "--output-format", "json",
       "--append-system-prompt", opts.playbook,
       "--permission-mode", "auto",

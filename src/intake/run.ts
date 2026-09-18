@@ -68,7 +68,7 @@ export async function runIntake(loaded: LoadedConfig, opts: IntakeOptions): Prom
   }
 
   const openIssues = await github.listIssues({ state: "open", limit: 200 });
-  const classifier = makeClassifier(config.intake.backend, config.intake.model);
+  const classifier = makeClassifier(config.intake.backend, config.intake.model, config.intake.effort);
   const { decisions, costUsd } = await classifyReports(reports, openIssues, classifier);
   if (costUsd !== null) info(`classified ${reports.length} report(s) for ${dim(`$${costUsd.toFixed(4)}`)}`);
 

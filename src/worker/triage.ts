@@ -120,7 +120,8 @@ export async function runTriage(
   const run = await runPhase("triage", PROMPT(issue, config.worker.denyPaths), VerdictSchema, {
     cwd: worktree.path,
     artifactDir,
-    model: "claude-sonnet-5",
+    model: config.worker.triageModel,
+    effort: config.worker.triageEffort,
     playbook,
     allowedTools: ["Bash", "Read", "Grep", "Glob", "Write", "WebFetch"],
     disallowedTools: ["Edit", "NotebookEdit"],

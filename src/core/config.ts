@@ -52,6 +52,8 @@ export const ConfigSchema = z.object({
       /** cli = the `claude` CLI you already log into. api = ANTHROPIC_API_KEY. */
       backend: z.enum(["cli", "api"]).default("cli"),
       model: z.string().default("claude-sonnet-5"),
+      /** Classification is a judgement call on short text, not a reasoning problem. */
+      effort: z.enum(["low", "medium", "high", "xhigh", "max"]).default("low"),
       /** Below this, intake files nothing and asks a human to restate. */
       minConfidence: z.number().min(0).max(1).default(0.7),
       /** Deliberately higher than minConfidence: a wrong duplicate loses the report entirely. */
@@ -68,6 +70,9 @@ export const ConfigSchema = z.object({
       maxRunsPerDay: z.number().int().positive().default(10),
       dailyBudgetUsd: z.number().positive().default(15),
       maxFixAttempts: z.number().int().positive().default(2),
+      /** Triage reads code and drives the app; it is not the fix, so it stays cheap. */
+      triageModel: z.string().default("claude-sonnet-5"),
+      triageEffort: z.enum(["low", "medium", "high", "xhigh", "max"]).default("medium"),
       denyPaths: z.array(z.string()).default(DEFAULT_DENY_PATHS),
     })
     .prefault({}),
