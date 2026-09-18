@@ -20,12 +20,24 @@ import { runPhase } from "./agent.js";
 import { ensureWorktree, isUntouched, removeWorktree, slugForIssue } from "./worktree.js";
 
 const VerdictSchema = z.object({
+  evidenceKind: z
+    .enum(["observed-running", "proven-by-code", "theory-only", "none"])
+    .describe(
+      "What actually backs your conclusion. observed-running: you drove the app or a test and saw it. " +
+        "proven-by-code: the claim is structural and code settles it — e.g. a component never renders a " +
+        "field at all, or a value is never queried. theory-only: a plausible mechanism you did not " +
+        "confirm; timing, performance and race conditions almost always land here, because reading code " +
+        "cannot show you a duration. none: you found nothing.",
+    ),
   reproduced: z
     .boolean()
-    .describe("True only if you observed the reported problem yourself in the running app or in a test."),
+    .describe(
+      "True only when evidenceKind is observed-running or proven-by-code. A theory, however convincing, " +
+        "is not a reproduction — say so and let a human decide rather than dressing it up as an observation.",
+    ),
   evidence: z
     .string()
-    .describe("What you observed, concretely. Paths to screenshots or output you captured. Empty if not reproduced."),
+    .describe("What you observed or what the code proves, concretely, with file:line or captured output. Empty if none."),
   attempted: z
     .string()
     .describe("What you tried, in enough detail that a human can carry on from here rather than start over."),
@@ -154,7 +166,14 @@ export async function runTriage(
 
   await github.commentOnIssue(issue.number, summary);
 
-  const safeToFix = verdict?.reproduced === true && verdict.blockedReason === "none";
+  // reproduced is the model's own claim; evidenceKind is what backs it. Trusting
+  // the boolean alone would let a confident theory through as an observation.
+  const grounded =
+    verdict?.evidenceKind === "observed-running" || verdict?.evidenceKind === "proven-by-code";
+  if (verdict?.reproduced === true && !grounded) {
+    warn(`  claimed a reproduction on ${verdict.evidenceKind} evidence — treating it as not reproduced`);
+  }
+  const safeToFix = verdict?.reproduced === true && grounded && verdict.blockedReason === "none";
   if (safeToFix) {
     info(`  ${green("reproduced")} — size ${verdict.size}; ready for a fix attempt`);
     await react(loaded, issue, "working");
@@ -237,9 +256,8 @@ function renderVerdict(
   run: { costUsd: number; turns: number; sessionId?: string },
   artifactDir: string,
 ): string {
-  const head = verdict.reproduced
-    ? "### ✅ Reproduced"
-    : "### ❓ Could not reproduce";
+  const grounded = verdict.evidenceKind === "observed-running" || verdict.evidenceKind === "proven-by-code";
+  const head = verdict.reproduced && grounded ? "### ✅ Reproduced" : "### ❓ Could not reproduce";
 
   const lines = [
     head,
@@ -248,7 +266,8 @@ function renderVerdict(
     "",
     "| | |",
     "|---|---|",
-    `| Reproduced | ${verdict.reproduced ? "yes" : "no"} |`,
+    `| Reproduced | ${verdict.reproduced && grounded ? "yes" : "no"} |`,
+    `| Evidence | \`${verdict.evidenceKind}\`${verdict.evidenceKind === "theory-only" ? " — a mechanism, not an observation" : ""} |`,
     `| Size | \`${verdict.size}\` |`,
     `| Blocked | ${verdict.blockedReason === "none" ? "no — safe to attempt a fix" : `\`${verdict.blockedReason}\``} |`,
   ];
