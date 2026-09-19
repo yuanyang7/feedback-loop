@@ -14,6 +14,16 @@ const DEFAULT_DENY_PATHS = [
   "**/billing/**",
   "scripts/release*",
   ".feedback-loop/**",
+  // Test configuration is the gate's own machinery. An agent told "CI failed"
+  // can reach the right answer here — one did — but the path from "a test
+  // timed out" to "raise the timeout" is the same path as "an assertion
+  // failed" to "delete the assertion", and only one of those is acceptable.
+  // Changing how every test runs is a human decision.
+  "vitest.config.*",
+  "jest.config.*",
+  "**/jest.setup.*",
+  "vitest-setup.*",
+  "playwright.config.*",
 ];
 
 export const ConfigSchema = z.object({

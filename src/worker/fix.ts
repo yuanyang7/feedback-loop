@@ -74,6 +74,11 @@ see the difference rather than take your word for it.
 Prefer the smallest change that actually fixes the reported problem. A refactor you believe in is
 not in scope, and it makes the diff harder to review.
 
+If a test fails, fix the code it is testing. Do not weaken the test to make it pass — not by
+relaxing an assertion, not by widening a tolerance, not by skipping it. If you become convinced the
+test itself is wrong, say so in \`risks\` and stop; that is a human's call, not a step on the way to
+a green build.
+
 <issue number="${issue.number}">
 <title>${issue.title}</title>
 <body>
