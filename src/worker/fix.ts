@@ -66,10 +66,41 @@ const ReviewSchema = z.object({
 type Fix = z.infer<typeof FixSchema>;
 type Review = z.infer<typeof ReviewSchema>;
 
-const FIX_PROMPT = (issue: Issue, triage: string, denyPaths: string[], previousFindings: string[], evidencePath: string) => `Fix the bug below. It has already been reproduced — the triage notes say how.
+const FIX_PROMPT = (
+  issue: Issue,
+  triage: string,
+  denyPaths: string[],
+  previousFindings: string[],
+  evidencePath: string,
+  previous: Fix | null,
+) => {
+  const retry =
+    previousFindings.length === 0
+      ? ""
+      : [
+          "A previous attempt was rejected. Address these before anything else:",
+          ...previousFindings.map((f) => `  - ${f}`),
+          "",
+          ...(previous
+            ? [
+                "That attempt is already committed on this branch — you are continuing it, not",
+                "starting over. Do not re-derive what it established:",
+                "",
+                `  What it changed:   ${previous.summary}`,
+                `  Files it touched:  ${previous.filesChanged.join(", ") || "(none reported)"}`,
+                `  How it verified:   ${previous.verification}`,
+                `  What it flagged:   ${previous.risks}`,
+                "",
+                "`git diff HEAD~1...HEAD` shows its diff if you need it. Change what the findings",
+                "require and leave the rest alone.",
+                "",
+              ]
+            : []),
+        ].join("\n");
 
-${previousFindings.length > 0 ? `A previous attempt was rejected in review. Address these before anything else:\n${previousFindings.map((f) => `  - ${f}`).join("\n")}\n` : ""}
-Work in this worktree, on its existing branch. When the fix is done:
+  return `Fix the bug below. It has already been reproduced — the triage notes say how.
+
+${retry}Work in this worktree, on its existing branch. When the fix is done:
 
 1. Confirm the reported problem is actually gone — drive the same interaction that reproduced it.
    Green tests prove nothing else broke; they do not prove this is fixed.
@@ -103,6 +134,7 @@ ${issue.body}
 <triage-notes>
 ${triage}
 </triage-notes>`;
+};
 
 const REVIEW_PROMPT = (issue: Issue, fix: Fix, baseBranch: string) => `Review the committed changes on this branch as a hostile reviewer. You are the last check before a human spends their attention on this.
 
@@ -220,7 +252,7 @@ async function runFixInner(
 
   if (opts.dryRun) {
     console.log(`\n${dim("[dry-run] would run the fix phase with this prompt:")}\n`);
-    console.log(FIX_PROMPT(issue, triageNotes, config.worker.denyPaths, [], "<run artifact dir>/evidence"));
+    console.log(FIX_PROMPT(issue, triageNotes, config.worker.denyPaths, [], "<run artifact dir>/evidence", null));
     return null;
   }
 
@@ -245,6 +277,10 @@ async function runFixInner(
   };
 
   let fix: Fix | null = null;
+  // Carried into the next attempt so it continues the work rather than
+  // rediscovering it: a retry that re-reads the whole codebase costs as much as
+  // the first pass and arrives back where the first pass already was.
+  let previousFix: Fix | null = null;
   let review: Review | null = null;
   let findings: string[] = [];
   let spent = 0;
@@ -254,7 +290,7 @@ async function runFixInner(
 
     const fixRun = await runPhase(
       `fix-${attempt}`,
-      FIX_PROMPT(issue, triageNotes, config.worker.denyPaths, findings, evidence),
+      FIX_PROMPT(issue, triageNotes, config.worker.denyPaths, findings, evidence, previousFix),
       FixSchema,
       {
         ...phaseOpts,
@@ -266,7 +302,7 @@ async function runFixInner(
       },
     );
     spent += fixRun.costUsd;
-    fix = fixRun.verdict;
+    fix = fixRun.verdict as Fix | null;
     await sweepWorktree(worktree.path, evidence);
 
     if (!fix) {
@@ -332,6 +368,7 @@ async function runFixInner(
 
     if (review?.verdict !== "approve") {
       findings = review?.blocking ?? ["Review did not complete; treat that as a rejection."];
+      previousFix = fix;
       warn(`  review rejected: ${findings.length} blocking finding(s)`);
 
       if (attempt === config.worker.maxFixAttempts) {

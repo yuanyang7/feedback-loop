@@ -4,9 +4,10 @@
  * base branch, and the repo's own rules forbid working on it directly.
  */
 import { execFile } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { promisify } from "node:util";
+import { dim, info } from "../core/log.js";
 
 const exec = promisify(execFile);
 
@@ -45,7 +46,48 @@ export async function ensureWorktree(
     "worktree", "add", join(".worktrees", slug),
     "-b", branch, `origin/${baseBranch}`,
   ]);
+
+  await seedDependencies(repoPath, path);
   return { path, branch, slug };
+}
+
+/**
+ * A fresh worktree has no node_modules, and installing them is most of the wall
+ * clock of a run that then spends two minutes thinking. The main checkout
+ * already has the right ones, so clone them with APFS copy-on-write: the copy
+ * is independent but shares blocks, so it costs seconds and almost no disk.
+ *
+ * Only when the lockfiles match. A clone against a different lockfile would be
+ * wrong in a way that surfaces much later as a confusing build failure, and
+ * `npm ci` is the correct answer there — just the slow one.
+ */
+async function seedDependencies(repoPath: string, worktreePath: string): Promise<void> {
+  for (const pkg of ["", "mobile"]) {
+    const from = join(repoPath, pkg, "node_modules");
+    const to = join(worktreePath, pkg, "node_modules");
+    if (!existsSync(from) || existsSync(to)) continue;
+    if (!sameLockfile(join(repoPath, pkg), join(worktreePath, pkg))) continue;
+
+    // -c asks for a clone; without APFS this silently falls back to a real copy,
+    // which is slower but still correct, so there is nothing to detect.
+    const started = Date.now();
+    const ok = await exec("cp", ["-c", "-R", from, to]).then(
+      () => true,
+      () => false,
+    );
+    if (ok) {
+      info(`  ${dim(`cloned ${pkg || "root"} node_modules in ${Math.round((Date.now() - started) / 1000)}s`)}`);
+    }
+  }
+}
+
+function sameLockfile(a: string, b: string): boolean {
+  const read = (dir: string): string | null => {
+    const path = join(dir, "package-lock.json");
+    return existsSync(path) ? readFileSync(path, "utf8") : null;
+  };
+  const left = read(a);
+  return left !== null && left === read(b);
 }
 
 export async function removeWorktree(repoPath: string, worktree: Worktree): Promise<void> {
