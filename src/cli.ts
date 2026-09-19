@@ -74,7 +74,10 @@ async function main(): Promise<number> {
       const issueNumber = issueIndex >= 0 ? Number(argv[issueIndex + 1]) : undefined;
       const a = argv.indexOf("--announce");
       await runTriage(loadConfig(dir), {
-        dryRun, issueNumber, announceChannel: a >= 0 ? argv[a + 1] : undefined,
+        dryRun,
+        issueNumber,
+        announceChannel: a >= 0 ? argv[a + 1] : undefined,
+        announceMessage: msgFlag(argv),
       });
       return 0;
     }
