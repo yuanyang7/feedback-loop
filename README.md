@@ -124,6 +124,7 @@ An explicit @-mention skips the floor. A human asking you directly is not a gues
 Mention the bot in the channel:
 
 ```
+@bot ready 1213      clear it for an autonomous attempt
 @bot triage 1206     reproduce and size it
 @bot fix 1206        implement, review, open a PR
 @bot status          queue, spend, what is waiting on you
@@ -151,6 +152,18 @@ Two things make this safe enough to leave in a channel other people can type in:
 
 A command from someone not on the list gets a reply saying so, rather than silence — a boundary
 nobody can see is one people keep walking into.
+
+### The gate
+
+Intake never applies `agent-ready`. The label means a person judged the report safe to hand to an
+agent, and a tool that grants its own permission is not a gate — so clearing it is `ready <issue>`,
+its own verb rather than something `triage` does quietly on your behalf.
+
+`intake.autoAgentReady` buys latency back where waiting costs most. At `"high"` a confident
+`severity:high` **bug** is cleared on arrival; at `"medium"` so is medium. Never a feature request,
+which is a product decision before it is an engineering one, and never a report filed below the
+confidence floor — one too thin for a person to act on is not one an agent can reproduce. The
+default is `"never"`.
 
 ## Reactions
 

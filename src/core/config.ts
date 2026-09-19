@@ -91,6 +91,15 @@ export const ConfigSchema = z.object({
       effort: z.enum(["low", "medium", "high", "xhigh", "max"]).default("medium"),
       /** Below this, intake files nothing and asks a human to restate. */
       minConfidence: z.number().min(0).max(1).default(0.7),
+      /**
+       * Severity at which a filed bug is cleared for an autonomous attempt
+       * without waiting for a human. "never" keeps the gate closed for
+       * everything, which is the default: the label means a person judged this
+       * safe to hand to an agent, and a tool that grants its own permission is
+       * not a gate. Raising it trades that judgement for latency on the reports
+       * where waiting costs most.
+       */
+      autoAgentReady: z.enum(["never", "high", "medium"]).default("never"),
       /** Deliberately higher than minConfidence: a wrong duplicate loses the report entirely. */
       minDuplicateConfidence: z.number().min(0).max(1).default(0.85),
       /** Max messages pulled per tick. */

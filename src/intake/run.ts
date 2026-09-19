@@ -158,6 +158,9 @@ export async function runIntake(loaded: LoadedConfig, opts: IntakeOptions): Prom
       `severity:${decision.severity}`,
       `size:${decision.sizeHint}`,
       decision.kind === "feature" ? "enhancement" : "bug",
+      ...(autoReady(config.intake.autoAgentReady, decision, lowConfidence)
+        ? [config.github.labels.agentReady]
+        : []),
     ];
 
     if (opts.dryRun) {
@@ -176,7 +179,9 @@ export async function runIntake(loaded: LoadedConfig, opts: IntakeOptions): Prom
       loaded, discord, anchor.id,
       lowConfidence
         ? `Filed as ${issueLink(config.target.repo, number)} — but I couldn't tell what's actually going wrong from this. Could you add specifics?`
-        : `Filed as ${issueLink(config.target.repo, number)} · ${decision.title}`,
+        : autoReady(config.intake.autoAgentReady, decision, lowConfidence)
+          ? `Filed as ${issueLink(config.target.repo, number)} · ${decision.title}\n\`severity:${decision.severity}\` — cleared for triage automatically. Reply \`triage ${number}\` to start one.`
+          : `Filed as ${issueLink(config.target.repo, number)} · ${decision.title}`,
     );
   }
 
@@ -237,6 +242,10 @@ async function handleCommands(
       await reply(await statusLine(loaded));
       continue;
     }
+    if (command.kind === "ready") {
+      await reply(await openGate(loaded, command.issue, dryRun));
+      continue;
+    }
 
     const busy = concurrencyRefusal(config.target.name, command.issue, config.worker.maxConcurrentRuns);
     if (busy) {
@@ -279,6 +288,34 @@ async function handleCommands(
  * label is deliberately not applied for you: it is the gate that says a human
  * cleared this for an autonomous attempt, so the reply says how to grant it.
  */
+/**
+ * Apply the gate label. Kept as its own verb rather than folded into `triage`:
+ * the whole point of the label is that a person decided, and doing it silently
+ * on their behalf while starting a run would erase the decision it records.
+ */
+async function openGate(loaded: LoadedConfig, issue: number, dryRun: boolean): Promise<string> {
+  const { config } = loaded;
+  const github = new GitHubClient(
+    config.target.repo,
+    config.github.tokenFile ? readSecret(config.github.tokenFile, "GITHUB_TOKEN") : undefined,
+  );
+  const found = await github.getIssue(issue).catch(() => null);
+  if (!found) return `#${issue} doesn't exist.`;
+  if (found.state !== "OPEN") return `#${issue} is closed.`;
+
+  const has = (name: string): boolean => found.labels.some((l) => l.name === name);
+  if (has(config.github.labels.agentReady)) {
+    return `#${issue} is already cleared — reply \`triage ${issue}\` to start one.`;
+  }
+  if (has(config.github.labels.needsInfo)) {
+    return `#${issue} is labelled \`needs-info\` — it's too thin to act on. Add specifics first, or clear the label yourself if it's wrong.`;
+  }
+  if (dryRun) return `[dry-run] would clear #${issue}`;
+
+  await github.addLabels(issue, [config.github.labels.agentReady]);
+  return `#${issue} cleared for triage. Reply \`triage ${issue}\` to start one.\n${found.title}`;
+}
+
 async function gateRefusal(
   loaded: LoadedConfig,
   command: { kind: "triage" | "fix"; issue: number },
@@ -296,13 +333,29 @@ async function gateRefusal(
   const needed = command.kind === "triage" ? config.github.labels.agentReady : config.github.labels.readyToFix;
   if (!has(needed)) {
     return command.kind === "triage"
-      ? `#${command.issue} isn't labelled \`${needed}\` yet — that's the gate saying it's cleared for an autonomous attempt.\n\`gh issue edit ${command.issue} --add-label ${needed}\``
+      ? `#${command.issue} isn't cleared yet — that gate says a person judged it safe to hand to an agent.\nReply \`ready ${command.issue}\` to clear it.`
       : `#${command.issue} isn't labelled \`${needed}\` — only an issue triage actually reproduced gets a fix attempt. Try \`triage ${command.issue}\` first.`;
   }
   if (has("needs-info")) {
     return `#${command.issue} is labelled \`needs-info\` — it's too thin to act on. It needs specifics before an agent can do anything with it.`;
   }
   return null;
+}
+
+/**
+ * Whether this report clears the gate on its own. Deliberately narrow: only a
+ * bug (a feature request is a product decision before it is an engineering
+ * one), only above the configured severity, and never one filed below the
+ * confidence floor — a report too thin for a person to act on is not one an
+ * agent can reproduce.
+ */
+function autoReady(
+  setting: "never" | "high" | "medium",
+  decision: Decision,
+  lowConfidence: boolean,
+): boolean {
+  if (setting === "never" || lowConfidence || decision.kind !== "bug") return false;
+  return setting === "high" ? decision.severity === "high" : decision.severity !== "low";
 }
 
 function issueLink(repo: string, number: number): string {

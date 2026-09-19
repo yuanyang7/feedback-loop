@@ -18,12 +18,19 @@ import { stateDir } from "../core/state.js";
 import { bold, dim, info, warn } from "../core/log.js";
 import type { DiscordMessage } from "./discord.js";
 
+/**
+ * Split per verb rather than one object with a union `kind`: narrowing a
+ * discriminant only narrows a union of object types, so the single-member form
+ * left `ready` in the type everywhere a run is started.
+ */
 export type Command =
-  | { kind: "triage" | "fix"; issue: number }
+  | { kind: "triage"; issue: number }
+  | { kind: "fix"; issue: number }
+  | { kind: "ready"; issue: number }
   | { kind: "status" }
   | { kind: "help" };
 
-const VERBS = /^(triage|fix|status|help)\b/i;
+const VERBS = /^(triage|fix|ready|status|help)\b/i;
 
 /**
  * Recognise a command, or return null and let the message be treated as a
@@ -53,7 +60,7 @@ export function parseCommand(
 
   const issue = Number(rest.replace(/^#/, "").split(/\s+/)[0]);
   if (!Number.isInteger(issue) || issue <= 0) return null;
-  return { kind: verb as "triage" | "fix", issue };
+  return { kind: verb as "triage" | "fix" | "ready", issue };
 }
 
 export function isOperator(message: DiscordMessage, operatorIds: string[]): boolean {
@@ -167,6 +174,7 @@ export function startWorker(
 export const HELP = [
   "**feedback-loop** — mention me with one of these:",
   "",
+  "`ready <issue>` — clear it for an autonomous attempt. This is the gate; only you can open it.",
   "`triage <issue>` — reproduce and size it. Never edits code.",
   "`fix <issue>` — implement, review adversarially, open a PR. Never merges.",
   "`status` — queue, spend, and what is waiting on you.",
