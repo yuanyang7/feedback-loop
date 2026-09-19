@@ -8,6 +8,7 @@ import { runIntake } from "./intake/run.js";
 import { runReconcile } from "./intake/reconcile.js";
 import { runTriage } from "./worker/triage.js";
 import { runFix } from "./worker/fix.js";
+import { serveDashboard } from "./dashboard/server.js";
 import { STATE_EMOJI } from "./intake/emoji.js";
 import { readSecret } from "./core/config.js";
 import { GitHubClient } from "./intake/github.js";
@@ -22,6 +23,7 @@ Usage:
   feedback-loop triage [dir]          Reproduce + size one agent-ready issue (never fixes)
   feedback-loop fix [dir]             Fix + adversarial review + open a PR (never merges)
   feedback-loop status [dir]          Queue, recent runs, and caps
+  feedback-loop dashboard [dir]       Local page: runs, verdicts, before/after screenshots
   feedback-loop labels [dir]          Create the labels this tool expects
 
 Options:
@@ -29,13 +31,14 @@ Options:
   --backfill N     On a fresh cursor, process the last N messages (default: skip history)
   --issue N        triage/fix: act on this issue instead of picking one
   --announce ID    triage/fix: post the result to this Discord channel when done
+  --port N         dashboard: listen on this port (default 7777)
 `;
 
 async function main(): Promise<number> {
   const argv = process.argv.slice(2);
   const command = argv[0];
   const flags = new Set(argv.filter((a) => a.startsWith("--")));
-  const valueFlags = new Set(["--backfill", "--issue", "--announce"]);
+  const valueFlags = new Set(["--backfill", "--issue", "--announce", "--port"]);
   const positional = argv.slice(1).filter((a, i) => {
     if (a.startsWith("--")) return false;
     const previous = argv.slice(1)[i - 1];
@@ -85,6 +88,11 @@ async function main(): Promise<number> {
     }
     case "status":
       return status(dir);
+    case "dashboard": {
+      const p = argv.indexOf("--port");
+      await serveDashboard(loadConfig(dir), p >= 0 ? Number(argv[p + 1]) : 7777);
+      return 0;
+    }
     case "labels":
       return labels(dir);
     default:

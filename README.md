@@ -28,7 +28,7 @@ See [DESIGN.md](DESIGN.md) § 8 for the build order and why fixing came last.
 | ✅ | two model backends — the `claude` CLI you already have, or an API key |
 | ✅ | `triage` — reproduce + size, never edits source |
 | ✅ | `fix` — implement → adversarial review → PR, never merges |
-| ⬜ | `dashboard` — local page with screenshots and run artifacts |
+| ✅ | `dashboard` — local page pairing before/after screenshots with each run's verdict |
 
 ## Setup
 
@@ -95,6 +95,16 @@ When it looks right:
 The first real run adopts the newest message as its cursor and files nothing, so turning it on
 doesn't dump your channel history into your issue tracker. Pass `--backfill 50` to deliberately
 include recent history.
+
+## Looking at what a run did
+
+```bash
+feedback-loop dashboard /path/to/your/repo    # http://localhost:7777
+```
+
+Read-only, derived entirely from `~/.feedback-loop` — it holds no state of its own, so it cannot
+disagree with the artifacts it describes. It exists for the one thing a terminal cannot do: put a
+before and an after screenshot side by side. `status` covers everything else.
 
 Schedule `tick` however you like — launchd, cron, a loop. It is idempotent and cheap.
 
