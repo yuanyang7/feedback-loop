@@ -111,7 +111,21 @@ Schedule `tick` however you like — launchd, cron, a loop. It is idempotent and
 
 ### Letting it pick up work
 
-With `worker.auto: ready`, a tick also starts the next queued run when there is room.
+With `worker.auto` set, a tick also starts the next queued run when there is room.
+
+| | |
+|---|---|
+| `never` | nothing starts unasked (default) |
+| `urgent-or-easy` | `severity:high`, or `size:s` |
+| `ready` | anything labelled `agent-ready` |
+
+`urgent-or-easy` is two different arguments for the same thing: urgent because waiting has a cost,
+easy because a failed attempt is cheap. Neither covers the large-and-not-urgent middle, which is
+where an unattended run spends the most to learn it should have asked. Those stay in the queue,
+marked `ask`, until you name one.
+
+The size here is intake's guess, made without seeing the code — the trustworthy one comes from
+triage, which has not run yet at this point.
 
 There is no queue to build: it is the `agent-ready` issues, already ordered by severity, oldest
 first within a severity so nothing starves. Anything labelled `needs-decision`, `needs-info` or

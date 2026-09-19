@@ -118,17 +118,25 @@ export const ConfigSchema = z.object({
        * worktree, so raising this is safe, just contended. */
       maxConcurrentRuns: z.number().int().positive().default(1),
       /**
-       * Pick work up on its own when there is room. "never" means a run only
-       * ever starts because someone asked for one.
+       * Which cleared issues start on their own when a slot frees.
+       *
+       *   never          nothing starts unasked.
+       *   urgent-or-easy severity:high, or size:s. Two different arguments for
+       *                  the same thing: urgent because waiting costs, easy
+       *                  because failing is cheap. Everything else waits to be
+       *                  asked for by name.
+       *   ready          anything labelled agent-ready.
        *
        * The queue is not a new thing to build — it is the agent-ready issues,
-       * already ordered by severity. What this adds is picking from it when a
+       * already ordered by severity. What this adds is taking from it when a
        * slot frees, and the slot freeing is a good moment by construction: it
-       * means a pull request was just merged, so the person who has to read the
-       * next one is demonstrably around. Throughput settles at exactly the rate
-       * they merge.
+       * means a pull request was just merged, so whoever has to read the next
+       * one is demonstrably around. Throughput settles at their merge rate.
+       *
+       * The size here is intake's guess, made without seeing the code — the
+       * trustworthy one comes from triage, which has not run yet at this point.
        */
-      auto: z.enum(["never", "ready"]).default("never"),
+      auto: z.enum(["never", "urgent-or-easy", "ready"]).default("never"),
       maxRunsPerDay: z.number().int().positive().default(10),
       dailyBudgetUsd: z.number().positive().default(15),
       /**

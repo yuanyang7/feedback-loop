@@ -30,7 +30,7 @@ export async function pickUpWork(loaded: LoadedConfig, dryRun: boolean): Promise
     return;
   }
 
-  const next = await nextIssue(github, config.github.labels.agentReady);
+  const next = await nextIssue(github, config.github.labels.agentReady, config.worker.auto);
   if (!next) return;
 
   if (dryRun) {
@@ -54,6 +54,24 @@ export function heldBack(issue: Issue): string | null {
   return null;
 }
 
+export function sizeOf(issue: Issue): "s" | "m" | "l" | null {
+  const label = issue.labels.map((l) => l.name).find((n) => n.startsWith("size:"));
+  const value = label?.slice(5);
+  return value === "s" || value === "m" || value === "l" ? value : null;
+}
+
+/**
+ * Whether this is one to start without being asked. Urgent because waiting has
+ * a cost, or easy because a failed attempt is cheap — different arguments, both
+ * sound, and neither covers the large-and-not-urgent middle, which is where an
+ * unattended run spends the most to learn it should have asked.
+ */
+export function startsUnasked(issue: Issue, mode: "never" | "urgent-or-easy" | "ready"): boolean {
+  if (mode === "never") return false;
+  if (mode === "ready") return true;
+  return severityOf(issue) === "high" || sizeOf(issue) === "s";
+}
+
 export function severityOf(issue: Issue): "high" | "medium" | "low" {
   const names = issue.labels.map((l) => l.name);
   if (names.includes("severity:high")) return "high";
@@ -74,9 +92,13 @@ export function orderQueue(issues: Issue[]): Issue[] {
     .sort((a, b) => rank[severityOf(b)] - rank[severityOf(a)] || a.number - b.number);
 }
 
-async function nextIssue(github: GitHubClient, readyLabel: string): Promise<Issue | null> {
+async function nextIssue(
+  github: GitHubClient,
+  readyLabel: string,
+  mode: "never" | "urgent-or-easy" | "ready",
+): Promise<Issue | null> {
   const candidates = await github.listIssues({ labels: [readyLabel], state: "open" });
-  return orderQueue(candidates)[0] ?? null;
+  return orderQueue(candidates).find((i) => startsUnasked(i, mode)) ?? null;
 }
 
 /** The one message the run will edit as it goes, so this adds a line, not four. */

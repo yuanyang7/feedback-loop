@@ -10,7 +10,7 @@ import { runTriage } from "./worker/triage.js";
 import { runFix } from "./worker/fix.js";
 import { serveDashboard } from "./dashboard/server.js";
 import { runChain } from "./worker/chain.js";
-import { heldBack, orderQueue, pickUpWork, severityOf } from "./worker/pickup.js";
+import { heldBack, orderQueue, pickUpWork, severityOf, sizeOf, startsUnasked } from "./worker/pickup.js";
 import { activeRuns } from "./intake/commands.js";
 import { STATE_EMOJI } from "./intake/emoji.js";
 import { readSecret } from "./core/config.js";
@@ -277,12 +277,20 @@ async function queue(dir: string): Promise<number> {
   if (lined.length === 0) {
     console.log(`    ${dim("nothing")}`);
   } else {
-    lined.forEach((issue, index) => {
-      const marker = index === 0 && !blocked ? green(" <- next") : "";
+    const auto = lined.filter((i) => startsUnasked(i, config.worker.auto));
+    lined.forEach((issue) => {
+      const self = startsUnasked(issue, config.worker.auto);
+      const marker = self && auto[0] === issue && !blocked ? green(" <- starts next") : "";
+      // Say plainly which ones will never start on their own, or the queue reads
+      // as a promise it is not making.
+      const how = self ? dim("auto ") : yellow("ask  ");
       console.log(
-        `    ${index === 0 ? "▸" : " "} #${issue.number}  ${dim(severityOf(issue).padEnd(6))} ${issue.title.slice(0, 54)}${marker}`,
+        `    ${how} #${issue.number}  ${dim(`${severityOf(issue)}/${sizeOf(issue) ?? "?"}`.padEnd(9))} ${issue.title.slice(0, 48)}${marker}`,
       );
     });
+    if (config.worker.auto !== "never" && auto.length === 0) {
+      console.log(`\n    ${dim(`none of these start unasked at auto: ${config.worker.auto}`)}`);
+    }
   }
 
   if (blocked) console.log(`\n  ${yellow("holding")} — ${blocked}`);
