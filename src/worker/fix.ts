@@ -37,6 +37,12 @@ const FixSchema = z.object({
         "Green tests alone are evidence that nothing else broke, not that this is fixed.",
     ),
   risks: z.string().describe("What a reviewer should scrutinise, and anything you deliberately did not do."),
+  recommendation: z
+    .string()
+    .describe(
+      "When blockedReason is not 'none': what you would do about it, chosen rather than listed. " +
+        "You have read this code; the person reading your report has not. Empty otherwise.",
+    ),
   blockedReason: z
     .enum(["none", "deny-path", "too-large", "cannot-verify", "needs-product-decision"])
     .describe("Why this should stop here instead of becoming a PR, or 'none'."),
@@ -46,6 +52,14 @@ const ReviewSchema = z.object({
   verdict: z.enum(["approve", "reject"]),
   blocking: z.array(z.string()).describe("Issues that must be fixed before this can be reviewed by a human."),
   nonBlocking: z.array(z.string()).describe("Worth mentioning in the PR, not worth another attempt."),
+  recommendation: z
+    .string()
+    .describe(
+      "If a blocking finding admits more than one way out, name the one you would take and say why " +
+        "in a sentence or two. Do not hedge: listing options without a preference hands the work " +
+        "back to a human who has read less of this code than you just did. Empty when there is " +
+        "nothing to choose between.",
+    ),
   reasoning: z.string(),
 });
 
@@ -102,6 +116,10 @@ Read the diff with \`git diff origin/${baseBranch}...HEAD\` and judge it on:
 
 Do not be agreeable. A finding you are unsure about belongs in nonBlocking, not omitted. Reject if
 anything in blocking would waste a reviewer's time or ship a defect.
+
+When a blocking finding has more than one acceptable resolution, pick one. You have just read this
+code closely; the person who reads your report has not, and handing them a list of options is
+handing back the part of the work you were best placed to do. Say which and why.
 
 Do not change any files. You are reviewing, not fixing.
 
@@ -282,7 +300,10 @@ async function runFixInner(
     }
     if (fix.blockedReason !== "none") {
       warn(`  blocked: ${fix.blockedReason}`);
-      await escalate(github, loaded, issue, blockedComment(fix), opts.announceChannel);
+      const branch = (await hasCommits(worktree, config.target.baseBranch))
+        ? await pushForInspection(config, worktree)
+        : "";
+      await escalate(github, loaded, issue, blockedComment(fix) + branch, opts.announceChannel);
       log(target, issue, `blocked: ${fix.blockedReason}`, spent, artifactDir);
       return null;
     }
@@ -314,12 +335,17 @@ async function runFixInner(
       warn(`  review rejected: ${findings.length} blocking finding(s)`);
 
       if (attempt === config.worker.maxFixAttempts) {
+        const branch = await pushForInspection(config, worktree);
         await escalate(
           github,
           loaded,
           issue,
           `Review rejected ${config.worker.maxFixAttempts} attempts. Escalating rather than grinding.\n\n` +
-            findings.map((f) => `- ${f}`).join("\n"),
+            findings.map((f) => `- ${f}`).join("\n") +
+            (review?.recommendation?.trim()
+              ? `\n\n**What the reviewer would do**\n\n${review.recommendation}`
+              : "") +
+            branch,
           opts.announceChannel,
         );
         log(target, issue, "review rejected", spent, artifactDir);
@@ -460,7 +486,33 @@ function blockedComment(fix: Fix): string {
     "",
     fix.summary,
     ...(fix.risks ? ["", "**Concerns**", "", fix.risks] : []),
+    ...(fix.recommendation?.trim() ? ["", "**What I would do**", "", fix.recommendation] : []),
   ].join("\n");
+}
+
+/**
+ * Push the branch even when the run is giving up, so the work is reachable from
+ * anywhere rather than stranded in one worktree on one machine. No pull request
+ * is opened — this is for looking at, not for proposing — and the CI hook is
+ * never bypassed: a branch that cannot pass is still worth reading, but it must
+ * not be mistaken for one that did.
+ */
+async function pushForInspection(
+  config: LoadedConfig["config"],
+  worktree: Worktree,
+): Promise<string> {
+  const compare = `https://github.com/${config.target.repo}/compare/${config.target.baseBranch}...${worktree.branch}`;
+  try {
+    await exec("git", ["-C", worktree.path, "push", "-u", "origin", worktree.branch], {
+      maxBuffer: 32 * 1024 * 1024,
+    });
+    return `\n\nThe branch is pushed for inspection — no PR: [\`${worktree.branch}\`](${compare})`;
+  } catch (error) {
+    const failure = parseCiFailure(`${(error as { stdout?: string }).stdout ?? ""}`);
+    return failure
+      ? `\n\nThe branch could not be pushed: local CI rejected it${failure.timeoutsOnly ? " (all timeouts)" : ""}. It is in \`.worktrees/${worktree.slug}\`.`
+      : `\n\nThe branch could not be pushed. It is in \`.worktrees/${worktree.slug}\`.`;
+  }
 }
 
 async function escalate(
