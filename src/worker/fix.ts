@@ -51,6 +51,13 @@ const FixSchema = z.object({
 const ReviewSchema = z.object({
   verdict: z.enum(["approve", "reject"]),
   blocking: z.array(z.string()).describe("Issues that must be fixed before this can be reviewed by a human."),
+  repeatsPreviousFinding: z
+    .boolean()
+    .describe(
+      "True when a blocking finding below is one an earlier round already raised and this attempt " +
+        "did not resolve. That is the signal that another attempt will not help; a new problem " +
+        "uncovered by fixing the last one is not a repeat.",
+    ),
   nonBlocking: z.array(z.string()).describe("Worth mentioning in the PR, not worth another attempt."),
   recommendation: z
     .string()
@@ -136,7 +143,7 @@ ${triage}
 </triage-notes>`;
 };
 
-const REVIEW_PROMPT = (issue: Issue, fix: Fix, baseBranch: string) => `Review the committed changes on this branch as a hostile reviewer. You are the last check before a human spends their attention on this.
+const REVIEW_PROMPT = (issue: Issue, fix: Fix, baseBranch: string, previousFindings: string[]) => `Review the committed changes on this branch as a hostile reviewer. You are the last check before a human spends their attention on this.
 
 Read the diff with \`git diff origin/${baseBranch}...HEAD\` and judge it on:
 
@@ -149,7 +156,19 @@ Read the diff with \`git diff origin/${baseBranch}...HEAD\` and judge it on:
 Do not be agreeable. A finding you are unsure about belongs in nonBlocking, not omitted. Reject if
 anything in blocking would waste a reviewer's time or ship a defect.
 
-When a blocking finding has more than one acceptable resolution, pick one. You have just read this
+${
+  previousFindings.length > 0
+    ? `An earlier round of this review raised the following, and the attempt you are looking at was
+supposed to resolve them:
+${previousFindings.map((f) => `  - ${f}`).join("\n")}
+
+Set repeatsPreviousFinding when something above is still true. Do not set it for a new problem you
+found while checking, even one the previous change caused — those are different, and treating them
+the same stops a run that is converging.
+
+`
+    : ""
+}When a blocking finding has more than one acceptable resolution, pick one. You have just read this
 code closely; the person who reads your report has not, and handing them a list of options is
 handing back the part of the work you were best placed to do. Say which and why.
 
@@ -283,8 +302,18 @@ async function runFixInner(
   let previousFix: Fix | null = null;
   let review: Review | null = null;
   let findings: string[] = [];
+  // Counted apart from review rounds: a rejected push is about correctness or
+  // the machine, not about judgement, and spending a review round on it was
+  // what cut #1213 off while it was still converging.
+  let ciRejections = 0;
+  let repeats = 0;
   let spent = 0;
 
+  // `attempt` counts every pass through this loop, including ones a rejected
+  // push sent back round; maxFixAttempts is the backstop on that total. What
+  // actually decides whether to give up is `repeats` — the same blocking
+  // finding surviving an attempt — because that is the shape of being stuck,
+  // and a round that clears one problem and uncovers another is not.
   for (let attempt = 1; attempt <= config.worker.maxFixAttempts; attempt += 1) {
     info(`  ${bold(`attempt ${attempt}/${config.worker.maxFixAttempts}`)}`);
 
@@ -352,7 +381,7 @@ async function runFixInner(
 
     const reviewRun = await runPhase(
       `review-${attempt}`,
-      REVIEW_PROMPT(issue, fix, config.target.baseBranch),
+      REVIEW_PROMPT(issue, fix, config.target.baseBranch, findings),
       ReviewSchema,
       {
         ...phaseOpts,
@@ -369,15 +398,22 @@ async function runFixInner(
     if (review?.verdict !== "approve") {
       findings = review?.blocking ?? ["Review did not complete; treat that as a rejection."];
       previousFix = fix;
-      warn(`  review rejected: ${findings.length} blocking finding(s)`);
+      if (review?.repeatsPreviousFinding) repeats += 1;
+      warn(
+        `  review rejected: ${findings.length} blocking finding(s)` +
+          (review?.repeatsPreviousFinding ? ` ${yellow(`(repeat ${repeats}/${config.worker.maxRepeatedFindings})`)}` : ""),
+      );
 
-      if (attempt === config.worker.maxFixAttempts) {
+      const stuck = repeats >= config.worker.maxRepeatedFindings;
+      if (stuck || attempt >= config.worker.maxFixAttempts) {
         const branch = await pushForInspection(config, worktree);
         await escalate(
           github,
           loaded,
           issue,
-          `Review rejected ${config.worker.maxFixAttempts} attempts. Escalating rather than grinding.\n\n` +
+          (stuck
+            ? `Review raised the same finding ${repeats} times without it being resolved — another attempt will not help.\n\n`
+            : `Review is still rejecting after ${attempt} attempts, each on something new. Stopping at the backstop rather than open-endedly.\n\n`) +
             findings.map((f) => `- ${f}`).join("\n") +
             (review?.recommendation?.trim()
               ? `\n\n**What the reviewer would do**\n\n${review.recommendation}`
@@ -401,9 +437,15 @@ async function runFixInner(
     warn(`  push rejected by local CI${push.timeoutsOnly ? " (all timeouts)" : ""}`);
     await github.commentOnIssue(issue.number, renderCiFailure(push, worktree.slug));
 
+    ciRejections += 1;
     const ciFindings = findingsFrom(push);
-    if (ciFindings.length > 0 && attempt < config.worker.maxFixAttempts) {
+    if (
+      ciFindings.length > 0 &&
+      ciRejections < config.worker.maxCiRejections &&
+      attempt < config.worker.maxFixAttempts
+    ) {
       findings = ciFindings;
+      previousFix = fix;
       continue;
     }
 

@@ -119,7 +119,17 @@ export const ConfigSchema = z.object({
       maxConcurrentRuns: z.number().int().positive().default(1),
       maxRunsPerDay: z.number().int().positive().default(10),
       dailyBudgetUsd: z.number().positive().default(15),
-      maxFixAttempts: z.number().int().positive().default(2),
+      /**
+       * Stop when review raises the same blocking finding twice. That is the
+       * shape that means a run is stuck; rounds that each clear one problem and
+       * uncover another are converging, just slowly, and counting rounds
+       * conflates the two.
+       */
+      maxRepeatedFindings: z.number().int().positive().default(2),
+      /** Backstop only, so a run that keeps finding new things cannot run forever. */
+      maxFixAttempts: z.number().int().positive().default(4),
+      /** CI rejections are counted apart from review: correctness, not judgement. */
+      maxCiRejections: z.number().int().positive().default(2),
       /** Triage reads code and drives the app; it is not the fix, so it stays cheap. */
       /** Hard ceilings per phase. The daily budget alone is too coarse, and a
        * fix costs several times what reading and reproducing does. */
