@@ -10,7 +10,8 @@ import { runTriage } from "./worker/triage.js";
 import { runFix } from "./worker/fix.js";
 import { serveDashboard } from "./dashboard/server.js";
 import { runChain } from "./worker/chain.js";
-import { pickUpWork } from "./worker/pickup.js";
+import { heldBack, orderQueue, pickUpWork, severityOf } from "./worker/pickup.js";
+import { activeRuns } from "./intake/commands.js";
 import { STATE_EMOJI } from "./intake/emoji.js";
 import { readSecret } from "./core/config.js";
 import { GitHubClient } from "./intake/github.js";
@@ -25,7 +26,8 @@ Usage:
   feedback-loop triage [dir]          Reproduce + size one agent-ready issue (never fixes)
   feedback-loop fix [dir]             Fix + adversarial review + open a PR (never merges)
   feedback-loop go [dir] --issue N    triage + fix + PR in one run (still never merges)
-  feedback-loop status [dir]          Queue, recent runs, and caps
+  feedback-loop queue [dir]           What runs next, in order, and what is held back
+  feedback-loop status [dir]          Queue counts, recent runs, and caps
   feedback-loop dashboard [dir]       Local page: runs, verdicts, before/after screenshots
   feedback-loop labels [dir]          Create the labels this tool expects
 
@@ -111,6 +113,8 @@ async function main(): Promise<number> {
       });
       return 0;
     }
+    case "queue":
+      return queue(dir);
     case "status":
       return status(dir);
     case "dashboard": {
@@ -238,6 +242,55 @@ async function status(dir: string): Promise<number> {
     console.log(`\n  ${bold("waiting on you")}`);
     for (const issue of blocked.slice(0, 10)) {
       console.log(`    ${STATE_EMOJI.needsDecision} #${issue.number} ${issue.title}`);
+    }
+  }
+  console.log("");
+  return 0;
+}
+
+async function queue(dir: string): Promise<number> {
+  const { config } = loadConfig(dir);
+  const github = new GitHubClient(
+    config.target.repo,
+    config.github.tokenFile ? readSecret(config.github.tokenFile, "GITHUB_TOKEN") : undefined,
+  );
+  const [ready, prs] = await Promise.all([
+    github.listIssues({ labels: [config.github.labels.agentReady], state: "open" }),
+    github.listPullRequests({ state: "open" }),
+  ]);
+
+  const lined = orderQueue(ready);
+  const held = ready.filter((i) => heldBack(i) !== null);
+  const agentPrs = prs.filter((pr) => (pr.labels ?? []).some((l) => l.name === config.github.labels.agentPr));
+  const running = activeRuns(config.target.name);
+
+  const blocked =
+    running.length >= config.worker.maxConcurrentRuns
+      ? `${running.map((r) => r.what).join(", ")} still running`
+      : agentPrs.length >= config.worker.maxOpenPRs
+        ? `${agentPrs.length} agent PR(s) open, cap ${config.worker.maxOpenPRs} — merge one to free a slot`
+        : config.worker.auto === "never"
+          ? `auto is off — start one with ${cyan("feedback-loop go . --issue N")}`
+          : null;
+
+  console.log(`\n  ${bold("in line")} ${dim(`(${config.github.labels.agentReady}, highest severity first)`)}`);
+  if (lined.length === 0) {
+    console.log(`    ${dim("nothing")}`);
+  } else {
+    lined.forEach((issue, index) => {
+      const marker = index === 0 && !blocked ? green(" <- next") : "";
+      console.log(
+        `    ${index === 0 ? "▸" : " "} #${issue.number}  ${dim(severityOf(issue).padEnd(6))} ${issue.title.slice(0, 54)}${marker}`,
+      );
+    });
+  }
+
+  if (blocked) console.log(`\n  ${yellow("holding")} — ${blocked}`);
+
+  if (held.length > 0) {
+    console.log(`\n  ${bold("set aside")} ${dim("(not in line until the label comes off)")}`);
+    for (const issue of held) {
+      console.log(`      #${issue.number}  ${dim((heldBack(issue) ?? "").padEnd(14))} ${issue.title.slice(0, 48)}`);
     }
   }
   console.log("");

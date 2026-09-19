@@ -29,9 +29,10 @@ export type Command =
   | { kind: "ready"; issue: number }
   | { kind: "go"; issue: number }
   | { kind: "status" }
+  | { kind: "queue" }
   | { kind: "help" };
 
-const VERBS = /^(triage|fix|ready|go|status|help)\b/i;
+const VERBS = /^(triage|fix|ready|go|status|queue|help)\b/i;
 
 /**
  * Recognise a command, or return null and let the message be treated as a
@@ -57,6 +58,7 @@ export function parseCommand(
   const rest = text.slice(match[0].length).trim();
 
   if (verb === "status") return { kind: "status" };
+  if (verb === "queue") return { kind: "queue" };
   if (verb === "help") return { kind: "help" };
 
   const issue = Number(rest.replace(/^#/, "").split(/\s+/)[0]);
@@ -185,7 +187,8 @@ export const HELP = [
   "`triage <issue>` — reproduce and size it. Never edits code.",
   "`fix <issue>` — implement, review adversarially, open a PR. Never merges.",
   "`go <issue>` — all of the above in one run: clear it, reproduce it, fix it, open the PR.",
-  "`status` — queue, spend, and what is waiting on you.",
+  "`status` — spend, and what is waiting on you.",
+  "`queue` — what runs next, in order.",
   "",
   "A run takes ten minutes or more and I will reply when it finishes.",
 ].join("\n");

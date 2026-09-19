@@ -45,26 +45,38 @@ export async function pickUpWork(loaded: LoadedConfig, dryRun: boolean): Promise
   info(`  ${bold(`picked up #${next.number}`)} ${cyan(next.title)} ${dim(`pid ${pid}`)}`);
 }
 
+/** Why an issue is not in line, or null if it is. */
+export function heldBack(issue: Issue): string | null {
+  const names = issue.labels.map((l) => l.name);
+  for (const label of ["needs-decision", "needs-info", "in-progress"]) {
+    if (names.includes(label)) return label;
+  }
+  return null;
+}
+
+export function severityOf(issue: Issue): "high" | "medium" | "low" {
+  const names = issue.labels.map((l) => l.name);
+  if (names.includes("severity:high")) return "high";
+  if (names.includes("severity:medium")) return "medium";
+  return "low";
+}
+
 /**
- * Highest severity first, oldest wins a tie so nothing starves. Anything a
- * human or an earlier run has already set aside is skipped.
+ * Highest severity first, oldest wins a tie so nothing starves. Exported and
+ * used by anything that shows the queue as well as by the picker — a display
+ * with its own copy of this would drift and start quietly lying about what
+ * runs next.
  */
+export function orderQueue(issues: Issue[]): Issue[] {
+  const rank = { high: 3, medium: 2, low: 1 } as const;
+  return issues
+    .filter((i) => heldBack(i) === null)
+    .sort((a, b) => rank[severityOf(b)] - rank[severityOf(a)] || a.number - b.number);
+}
+
 async function nextIssue(github: GitHubClient, readyLabel: string): Promise<Issue | null> {
   const candidates = await github.listIssues({ labels: [readyLabel], state: "open" });
-  const rank = (issue: Issue): number => {
-    const names = issue.labels.map((l) => l.name);
-    if (names.includes("needs-decision") || names.includes("needs-info") || names.includes("in-progress")) {
-      return -1;
-    }
-    if (names.includes("severity:high")) return 3;
-    if (names.includes("severity:medium")) return 2;
-    return 1;
-  };
-  return (
-    candidates
-      .filter((i) => rank(i) > 0)
-      .sort((a, b) => rank(b) - rank(a) || a.number - b.number)[0] ?? null
-  );
+  return orderQueue(candidates)[0] ?? null;
 }
 
 /** The one message the run will edit as it goes, so this adds a line, not four. */

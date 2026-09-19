@@ -7,6 +7,7 @@ import { DiscordClient, messageUrl, type DiscordMessage } from "./discord.js";
 import { setState } from "./emoji.js";
 import { encodeFooter } from "./footer.js";
 import { GitHubClient, type Issue } from "./github.js";
+import { heldBack, orderQueue, severityOf } from "../worker/pickup.js";
 import { anchorOf, groupMessages, renderReport, type Report } from "./group.js";
 import {
   activeRuns, claimRun, concurrencyRefusal, describeRejection, HELP, isOperator, parseCommand,
@@ -242,6 +243,10 @@ async function handleCommands(
       await reply(await statusLine(loaded));
       continue;
     }
+    if (command.kind === "queue") {
+      await reply(await queueLine(loaded));
+      continue;
+    }
     if (command.kind === "ready") {
       await reply(await openGate(loaded, command.issue, dryRun));
       continue;
@@ -423,6 +428,38 @@ async function pollCommandChannels(
   if (changed && !dryRun) {
     writeIntakeState(loaded.config.target.name, { ...state, commandCursors: cursors });
   }
+}
+
+async function queueLine(loaded: LoadedConfig): Promise<string> {
+  const { config } = loaded;
+  const github = new GitHubClient(
+    config.target.repo,
+    config.github.tokenFile ? readSecret(config.github.tokenFile, "GITHUB_TOKEN") : undefined,
+  );
+  const [ready, prs] = await Promise.all([
+    github.listIssues({ labels: [config.github.labels.agentReady], state: "open" }),
+    github.listPullRequests({ state: "open" }),
+  ]);
+  const lined = orderQueue(ready);
+  const held = ready.filter((i) => heldBack(i) !== null);
+  const agentPrs = prs.filter((pr) => (pr.labels ?? []).some((l) => l.name === config.github.labels.agentPr));
+  const running = activeRuns(config.target.name);
+
+  if (lined.length === 0 && held.length === 0) return "Queue is empty.";
+
+  const lines = lined
+    .slice(0, 8)
+    .map((i, n) => `${n === 0 ? "▸" : "  "} **#${i.number}** \`${severityOf(i)}\` ${i.title}`);
+  if (lined.length > 8) lines.push(`  …and ${lined.length - 8} more`);
+
+  if (running.length > 0) lines.push(`\n🔧 ${running.map((r) => r.what).join(", ")} running`);
+  else if (agentPrs.length >= config.worker.maxOpenPRs) {
+    lines.push(`\n⏸ ${agentPrs.length} PR(s) open, cap ${config.worker.maxOpenPRs} — merge one to free a slot`);
+  }
+  if (held.length > 0) {
+    lines.push(`\nSet aside: ${held.map((i) => `#${i.number} (${heldBack(i)})`).join(", ")}`);
+  }
+  return lines.join("\n");
 }
 
 async function statusLine(loaded: LoadedConfig): Promise<string> {
