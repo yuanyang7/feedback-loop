@@ -109,6 +109,22 @@ before and an after screenshot side by side. `status` covers everything else.
 
 Schedule `tick` however you like — launchd, cron, a loop. It is idempotent and cheap.
 
+### Letting it pick up work
+
+With `worker.auto: ready`, a tick also starts the next queued run when there is room.
+
+There is no queue to build: it is the `agent-ready` issues, already ordered by severity, oldest
+first within a severity so nothing starves. Anything labelled `needs-decision`, `needs-info` or
+`in-progress` is skipped — those were set aside by a person or by an earlier run.
+
+The pacing is `maxOpenPRs`. A slot frees only when you merge something, which means the moment work
+is picked up is a moment you are demonstrably around, and throughput settles at exactly your merge
+rate. That is the property that makes this safe to leave on: not that the worker is reliable, but
+that it cannot outrun you.
+
+It starts one run per tick and returns. The spend caps, the concurrency limit and the reproduce
+gate all still apply.
+
 ## How it decides
 
 Intake groups consecutive messages from one author into a single report, classifies each as

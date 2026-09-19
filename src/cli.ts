@@ -10,6 +10,7 @@ import { runTriage } from "./worker/triage.js";
 import { runFix } from "./worker/fix.js";
 import { serveDashboard } from "./dashboard/server.js";
 import { runChain } from "./worker/chain.js";
+import { pickUpWork } from "./worker/pickup.js";
 import { STATE_EMOJI } from "./intake/emoji.js";
 import { readSecret } from "./core/config.js";
 import { GitHubClient } from "./intake/github.js";
@@ -67,6 +68,9 @@ async function main(): Promise<number> {
       const loaded = loadConfig(dir);
       await runIntake(loaded, { dryRun, backfill });
       await runReconcile(loaded, { dryRun });
+      // Reconcile first: a merge that just freed a slot has to be visible
+      // before we decide whether there is room for another run.
+      await pickUpWork(loaded, dryRun);
       return 0;
     }
     case "triage": {

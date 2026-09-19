@@ -117,6 +117,18 @@ export const ConfigSchema = z.object({
        * database, dev server and full CI pass. Different issues never share a
        * worktree, so raising this is safe, just contended. */
       maxConcurrentRuns: z.number().int().positive().default(1),
+      /**
+       * Pick work up on its own when there is room. "never" means a run only
+       * ever starts because someone asked for one.
+       *
+       * The queue is not a new thing to build — it is the agent-ready issues,
+       * already ordered by severity. What this adds is picking from it when a
+       * slot frees, and the slot freeing is a good moment by construction: it
+       * means a pull request was just merged, so the person who has to read the
+       * next one is demonstrably around. Throughput settles at exactly the rate
+       * they merge.
+       */
+      auto: z.enum(["never", "ready"]).default("never"),
       maxRunsPerDay: z.number().int().positive().default(10),
       dailyBudgetUsd: z.number().positive().default(15),
       /**
