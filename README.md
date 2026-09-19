@@ -28,6 +28,7 @@ See [DESIGN.md](DESIGN.md) § 8 for the build order and why fixing came last.
 | ✅ | two model backends — the `claude` CLI you already have, or an API key |
 | ✅ | `triage` — reproduce + size, never edits source |
 | ✅ | `fix` — implement → adversarial review → PR, never merges |
+| ✅ | `go` — the whole chain in one command |
 | ✅ | `dashboard` — local page pairing before/after screenshots with each run's verdict |
 
 ## Setup
@@ -127,8 +128,16 @@ Mention the bot in the channel:
 @bot ready 1213      clear it for an autonomous attempt
 @bot triage 1206     reproduce and size it
 @bot fix 1206        implement, review, open a PR
+@bot go 1213         all of it: clear, reproduce, fix, open the PR
 @bot status          queue, spend, what is waiting on you
 ```
+
+`go` is the whole pipeline in one run, and it reports at each step so you can follow it from a
+phone. What it gives up is the pause between triage and fix where you would have read the
+reproduction before paying for a change. Everything that protects the repository is untouched: the
+fix phase is still reached only by triage marking the issue reproduced — re-read from GitHub, never
+assumed — deny paths still stop it, review still blocks it, and it still ends at a pull request
+only you can merge.
 
 Commands work in the feedback channel, and in any channel listed under `discord.commandChannelIds`
 — a DM with the bot is the quiet place to drive this from a phone. Those channels are polled for

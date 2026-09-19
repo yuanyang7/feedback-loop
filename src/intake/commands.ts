@@ -27,10 +27,11 @@ export type Command =
   | { kind: "triage"; issue: number }
   | { kind: "fix"; issue: number }
   | { kind: "ready"; issue: number }
+  | { kind: "go"; issue: number }
   | { kind: "status" }
   | { kind: "help" };
 
-const VERBS = /^(triage|fix|ready|status|help)\b/i;
+const VERBS = /^(triage|fix|ready|go|status|help)\b/i;
 
 /**
  * Recognise a command, or return null and let the message be treated as a
@@ -60,7 +61,7 @@ export function parseCommand(
 
   const issue = Number(rest.replace(/^#/, "").split(/\s+/)[0]);
   if (!Number.isInteger(issue) || issue <= 0) return null;
-  return { kind: verb as "triage" | "fix" | "ready", issue };
+  return { kind: verb as "triage" | "fix" | "go", issue };
 }
 
 export function isOperator(message: DiscordMessage, operatorIds: string[]): boolean {
@@ -154,7 +155,7 @@ export function concurrencyRefusal(
 export function startWorker(
   target: string,
   repoDir: string,
-  command: { kind: "triage" | "fix"; issue: number },
+  command: { kind: "triage" | "fix" | "go"; issue: number },
   announceChannel: string,
 ): { pid: number; logPath: string } {
   const logPath = join(stateDir(target), `worker-${command.kind}-${command.issue}.log`);
@@ -177,6 +178,7 @@ export const HELP = [
   "`ready <issue>` — clear it for an autonomous attempt. This is the gate; only you can open it.",
   "`triage <issue>` — reproduce and size it. Never edits code.",
   "`fix <issue>` — implement, review adversarially, open a PR. Never merges.",
+  "`go <issue>` — all of the above in one run: clear it, reproduce it, fix it, open the PR.",
   "`status` — queue, spend, and what is waiting on you.",
   "",
   "A run takes ten minutes or more and I will reply when it finishes.",

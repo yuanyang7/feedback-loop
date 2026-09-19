@@ -9,6 +9,7 @@ import { runReconcile } from "./intake/reconcile.js";
 import { runTriage } from "./worker/triage.js";
 import { runFix } from "./worker/fix.js";
 import { serveDashboard } from "./dashboard/server.js";
+import { runChain } from "./worker/chain.js";
 import { STATE_EMOJI } from "./intake/emoji.js";
 import { readSecret } from "./core/config.js";
 import { GitHubClient } from "./intake/github.js";
@@ -22,6 +23,7 @@ Usage:
   feedback-loop tick [dir]            intake + reconcile
   feedback-loop triage [dir]          Reproduce + size one agent-ready issue (never fixes)
   feedback-loop fix [dir]             Fix + adversarial review + open a PR (never merges)
+  feedback-loop go [dir] --issue N    triage + fix + PR in one run (still never merges)
   feedback-loop status [dir]          Queue, recent runs, and caps
   feedback-loop dashboard [dir]       Local page: runs, verdicts, before/after screenshots
   feedback-loop labels [dir]          Create the labels this tool expects
@@ -82,6 +84,20 @@ async function main(): Promise<number> {
       await runFix(loadConfig(dir), {
         dryRun,
         issueNumber: i >= 0 ? Number(argv[i + 1]) : undefined,
+        announceChannel: a >= 0 ? argv[a + 1] : undefined,
+      });
+      return 0;
+    }
+    case "go": {
+      const i = argv.indexOf("--issue");
+      const a = argv.indexOf("--announce");
+      if (i < 0) {
+        fail("go needs an issue: feedback-loop go . --issue 1213");
+        return 1;
+      }
+      await runChain(loadConfig(dir), {
+        issueNumber: Number(argv[i + 1]),
+        dryRun,
         announceChannel: a >= 0 ? argv[a + 1] : undefined,
       });
       return 0;

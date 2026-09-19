@@ -1,0 +1,90 @@
+/**
+ * ready → triage → fix → pull request, in one go.
+ *
+ * What this skips is the human read of the triage verdict. Everything that
+ * actually protects the repository is still in the way: a fix only runs on an
+ * issue triage reproduced, deny paths still stop it, review still blocks it,
+ * and it still ends at a pull request nobody but you can merge.
+ *
+ * What it costs is the chance to look at the reproduction before paying for a
+ * fix, so it is a verb you type at a specific issue — never something that
+ * happens on a timer.
+ */
+import { readSecret, type LoadedConfig } from "../core/config.js";
+import { bold, cyan, dim, info, warn } from "../core/log.js";
+import { GitHubClient } from "../intake/github.js";
+import { announce } from "./announce.js";
+import { runFix } from "./fix.js";
+import { runTriage } from "./triage.js";
+
+export async function runChain(
+  loaded: LoadedConfig,
+  opts: { issueNumber: number; dryRun: boolean; announceChannel?: string },
+): Promise<void> {
+  const { config } = loaded;
+  const labels = config.github.labels;
+  const github = new GitHubClient(
+    config.target.repo,
+    config.github.tokenFile ? readSecret(config.github.tokenFile, "GITHUB_TOKEN") : undefined,
+  );
+
+  const issue = await github.getIssue(opts.issueNumber).catch(() => null);
+  if (!issue) {
+    warn(`#${opts.issueNumber} not found.`);
+    await announce(loaded, opts.announceChannel, `#${opts.issueNumber} doesn't exist.`);
+    return;
+  }
+  if (issue.state !== "OPEN") {
+    warn(`#${opts.issueNumber} is closed.`);
+    await announce(loaded, opts.announceChannel, `#${opts.issueNumber} is closed.`);
+    return;
+  }
+
+  const has = (name: string): boolean => issue.labels.some((l) => l.name === name);
+  if (has(labels.needsInfo)) {
+    const message = `#${issue.number} is labelled \`needs-info\` — too thin to act on. It needs specifics before any of this can start.`;
+    warn(message);
+    await announce(loaded, opts.announceChannel, message);
+    return;
+  }
+
+  // Typing this at a specific issue is the decision the gate records, so the
+  // label is applied rather than demanded — but it is still applied, because
+  // the rest of the pipeline reads it.
+  if (!has(labels.agentReady)) {
+    info(`  ${dim(`clearing #${issue.number} for an attempt`)}`);
+    if (!opts.dryRun) await github.addLabels(issue.number, [labels.agentReady]);
+  }
+
+  info(`${bold("1/2")} triage`);
+  await runTriage(loaded, { issueNumber: issue.number, dryRun: opts.dryRun, announceChannel: undefined });
+  if (opts.dryRun) return;
+
+  // Triage marks ready-to-fix only when it actually reproduced the problem and
+  // found nothing blocking. Re-reading it is how this chain stays honest: the
+  // fix phase is never reached by assumption, only by that label existing.
+  const after = await github.getIssue(issue.number).catch(() => null);
+  const reproduced = after?.labels.some((l) => l.name === labels.readyToFix) ?? false;
+  if (!reproduced) {
+    info(`  ${dim("triage did not clear it for a fix — stopping here")}`);
+    await announce(
+      loaded,
+      opts.announceChannel,
+      `🤔 #${issue.number}: triage stopped short of a fix. It's on the issue, and needs you.\n${issue.url}`,
+    );
+    return;
+  }
+
+  info(`${bold("2/2")} fix`);
+  await announce(
+    loaded,
+    opts.announceChannel,
+    `✅ #${issue.number} reproduced — starting the fix. Another ten minutes or so.`,
+  );
+  await runFix(loaded, {
+    issueNumber: issue.number,
+    dryRun: false,
+    announceChannel: opts.announceChannel,
+  });
+  info(`${cyan("chain done")}`);
+}

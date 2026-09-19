@@ -271,7 +271,9 @@ async function handleCommands(
     claimRun(config.target.name, pid, `${command.kind} #${command.issue}`, command.issue);
     info(`  ${bold(`started ${command.kind} #${command.issue}`)} ${dim(`pid ${pid}`)}`);
     await reply(
-      `Starting \`${command.kind}\` on #${command.issue}. This takes ten minutes or more — I'll reply when it's done.\n` +
+      (command.kind === "go"
+        ? `On it — #${command.issue}: reproduce, fix, review, PR. Twenty minutes or so, and I'll report at each step.\n`
+        : `Starting \`${command.kind}\` on #${command.issue}. This takes ten minutes or more — I'll reply when it's done.\n`) +
         `<sub>${logPath}</sub>`,
     );
   }
@@ -318,7 +320,7 @@ async function openGate(loaded: LoadedConfig, issue: number, dryRun: boolean): P
 
 async function gateRefusal(
   loaded: LoadedConfig,
-  command: { kind: "triage" | "fix"; issue: number },
+  command: { kind: "triage" | "fix" | "go"; issue: number },
 ): Promise<string | null> {
   const { config } = loaded;
   const github = new GitHubClient(
@@ -330,6 +332,12 @@ async function gateRefusal(
   if (issue.state !== "OPEN") return `Can't run \`${command.kind}\` — #${command.issue} is closed.`;
 
   const has = (name: string): boolean => issue.labels.some((l) => l.name === name);
+  // `go` clears the gate itself — typing it at an issue is the decision.
+  if (command.kind === "go") {
+    return has("needs-info")
+      ? `#${command.issue} is labelled \`needs-info\` — too thin to act on. It needs specifics first.`
+      : null;
+  }
   const needed = command.kind === "triage" ? config.github.labels.agentReady : config.github.labels.readyToFix;
   if (!has(needed)) {
     return command.kind === "triage"
