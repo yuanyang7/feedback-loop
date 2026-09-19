@@ -187,7 +187,7 @@ Risks flagged by the author: ${fix.risks}
 
 export async function runFix(
   loaded: LoadedConfig,
-  opts: { issueNumber?: number; dryRun: boolean; announceChannel?: string },
+  opts: { issueNumber?: number; dryRun: boolean; announceChannel?: string; announceMessage?: string },
 ): Promise<void> {
   // in-progress is claimed early and has to come off however the run ends.
   // Without this, a crash leaves an issue asserting that work is underway
@@ -223,7 +223,7 @@ function githubFor(loaded: LoadedConfig): GitHubClient {
 
 async function runFixInner(
   loaded: LoadedConfig,
-  opts: { issueNumber?: number; dryRun: boolean; announceChannel?: string },
+  opts: { issueNumber?: number; dryRun: boolean; announceChannel?: string; announceMessage?: string },
   onClaim: (issue: Issue) => void,
 ): Promise<Issue | null> {
   const { config, repoPath, playbookPath } = loaded;
@@ -238,7 +238,7 @@ async function runFixInner(
   const gate = await checkGate(config, github);
   if (!gate.ok) {
     warn(`gate closed — ${gate.reason}`);
-    await announce(loaded, opts.announceChannel, `Can't start — ${gate.reason}`);
+    await announce(loaded, opts.announceChannel, `Can't start — ${gate.reason}`, opts.announceMessage);
     return null;
   }
 
@@ -247,20 +247,18 @@ async function runFixInner(
     if (opts.issueNumber === undefined) {
       info(`Nothing labelled ${cyan(labels.readyToFix)} to fix. Run triage first.`);
     }
-    await announce(
-      loaded,
-      opts.announceChannel,
+    await announce(loaded, opts.announceChannel,
       opts.issueNumber === undefined
         ? `Nothing labelled \`${labels.readyToFix}\` to fix — run \`triage\` on something first.`
         : `Can't fix #${opts.issueNumber} — it isn't labelled \`${labels.readyToFix}\`. Triage has to reproduce it first.`,
-    );
+    opts.announceMessage);
     return null;
   }
   info(`${bold(`#${issue.number}`)} ${issue.title}`);
 
   if (!playbookPath) {
     warn("No .feedback-loop/playbook.md — refusing to run an agent in this repo without one.");
-    await announce(loaded, opts.announceChannel, "Can't start — this repo has no `.feedback-loop/playbook.md`.");
+    await announce(loaded, opts.announceChannel, "Can't start — this repo has no `.feedback-loop/playbook.md`.", opts.announceMessage);
     return null;
   }
   const { readFileSync } = await import("node:fs");
@@ -359,7 +357,7 @@ async function runFixInner(
         return null;
       }
       warn(`  fix phase failed: ${fixRun.failure}`);
-      await escalate(github, loaded, issue, `The fix phase did not complete.\n\n\`\`\`\n${fixRun.failure}\n\`\`\``, opts.announceChannel);
+      await escalate(github, loaded, issue, `The fix phase did not complete.\n\n\`\`\`\n${fixRun.failure}\n\`\`\``, opts.announceChannel, opts.announceMessage);
       log(target, issue, "fix phase failed", spent, artifactDir);
       return null;
     }
@@ -368,13 +366,13 @@ async function runFixInner(
       const branch = (await hasCommits(worktree, config.target.baseBranch))
         ? await pushForInspection(config, worktree)
         : "";
-      await escalate(github, loaded, issue, blockedComment(fix) + branch, opts.announceChannel);
+      await escalate(github, loaded, issue, blockedComment(fix) + branch, opts.announceChannel, opts.announceMessage);
       log(target, issue, `blocked: ${fix.blockedReason}`, spent, artifactDir);
       return null;
     }
     if (!fix.implemented || !(await hasCommits(worktree, config.target.baseBranch))) {
       warn("  reported success but committed nothing");
-      await escalate(github, loaded, issue, "The fix phase reported success but committed nothing.", opts.announceChannel);
+      await escalate(github, loaded, issue, "The fix phase reported success but committed nothing.", opts.announceChannel, opts.announceMessage);
       log(target, issue, "no commits", spent, artifactDir);
       return null;
     }
@@ -420,6 +418,7 @@ async function runFixInner(
               : "") +
             branch,
           opts.announceChannel,
+          opts.announceMessage,
         );
         log(target, issue, "review rejected", spent, artifactDir);
         return null;
@@ -449,9 +448,7 @@ async function runFixInner(
       continue;
     }
 
-    await announce(
-      loaded,
-      opts.announceChannel,
+    await announce(loaded, opts.announceChannel,
       push.timeoutsOnly
         ? `⏱️ #${issue.number}: CI timed out — the machine was loaded, not the diff. Work is saved; re-run when quieter.\n${issue.url}`
         : `❌ #${issue.number}: local CI rejected the push. Needs you.\n${issue.url}`,
@@ -471,7 +468,7 @@ async function runFixInner(
 
   const prUrl = await openPullRequest(github, config, worktree, issue, fix, review, triageNotes, spent, artifactDir, listEvidence(evidence));
   info(`  ${green("PR open")} ${prUrl}`);
-  await announce(loaded, opts.announceChannel, `✅ PR open for #${issue.number} — $${spent.toFixed(2)}. Waiting on you.\n${prUrl}`);
+  await announce(loaded, opts.announceChannel, `✅ PR open for #${issue.number} — $${spent.toFixed(2)}. Waiting on you.\n${prUrl}`, opts.announceMessage);
   await github.removeLabels(issue.number, ["in-progress", config.github.labels.readyToFix]);
   await react(loaded, issue, "prReady");
   log(target, issue, `PR opened: ${prUrl}`, spent, artifactDir);
@@ -600,8 +597,9 @@ async function escalate(
   issue: Issue,
   comment: string,
   announceChannel?: string,
+  announceMessage?: string,
 ): Promise<void> {
-  await announce(loaded, announceChannel, `🤔 Stopped on #${issue.number}. Needs you.\n${issue.url}`);
+  await announce(loaded, announceChannel, `🤔 Stopped on #${issue.number}. Needs you.\n${issue.url}`, announceMessage);
   await github.commentOnIssue(issue.number, comment);
   await github.addLabels(issue.number, [loaded.config.github.labels.needsDecision]);
   await github.removeLabels(issue.number, ["in-progress", loaded.config.github.labels.readyToFix]);

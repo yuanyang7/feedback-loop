@@ -157,6 +157,7 @@ export function startWorker(
   repoDir: string,
   command: { kind: "triage" | "fix" | "go"; issue: number },
   announceChannel: string,
+  announceMessage: string | null,
 ): { pid: number; logPath: string } {
   const logPath = join(stateDir(target), `worker-${command.kind}-${command.issue}.log`);
   const log = openSync(logPath, "a");
@@ -165,7 +166,12 @@ export function startWorker(
   const launcher = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "bin", "feedback-loop.mjs");
   const child = spawn(
     process.execPath,
-    [launcher, command.kind, repoDir, "--issue", String(command.issue), "--announce", announceChannel],
+    [
+      launcher, command.kind, repoDir,
+      "--issue", String(command.issue),
+      "--announce", announceChannel,
+      ...(announceMessage ? ["--announce-message", announceMessage] : []),
+    ],
     { detached: true, stdio: ["ignore", log, log] },
   );
   child.unref();

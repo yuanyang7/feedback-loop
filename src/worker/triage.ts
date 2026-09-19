@@ -102,7 +102,7 @@ ${issue.body}
 
 export async function runTriage(
   loaded: LoadedConfig,
-  opts: { issueNumber?: number; dryRun: boolean; announceChannel?: string },
+  opts: { issueNumber?: number; dryRun: boolean; announceChannel?: string; announceMessage?: string },
 ): Promise<void> {
   const { config, repoPath, playbookPath } = loaded;
   const target = config.target.name;
@@ -115,20 +115,18 @@ export async function runTriage(
   const gate = await checkGate(config, github);
   if (!gate.ok) {
     warn(`gate closed — ${gate.reason}`);
-    await announce(loaded, opts.announceChannel, `Can't start — ${gate.reason}`);
+    await announce(loaded, opts.announceChannel, `Can't start — ${gate.reason}`, opts.announceMessage);
     return;
   }
 
   const issue = await pickIssue(github, config.github.labels.agentReady, opts.issueNumber);
   if (!issue) {
     // Whoever asked for this is waiting on a reply. Silence reads as a hang.
-    await announce(
-      loaded,
-      opts.announceChannel,
+    await announce(loaded, opts.announceChannel,
       opts.issueNumber === undefined
         ? `Nothing labelled \`${config.github.labels.agentReady}\` to triage.`
         : `Can't triage #${opts.issueNumber} — it isn't labelled \`${config.github.labels.agentReady}\`, or it's closed.`,
-    );
+    opts.announceMessage);
     // When an issue was named, pickIssue has already said exactly what was
     // wrong with it; repeating the generic line here just muddies that.
     if (opts.issueNumber === undefined) {
@@ -140,7 +138,7 @@ export async function runTriage(
 
   if (!playbookPath) {
     warn("No .feedback-loop/playbook.md — refusing to run an agent in this repo without one.");
-    await announce(loaded, opts.announceChannel, "Can't start — this repo has no `.feedback-loop/playbook.md`.");
+    await announce(loaded, opts.announceChannel, "Can't start — this repo has no `.feedback-loop/playbook.md`.", opts.announceMessage);
     return;
   }
   const playbook = readFileSync(playbookPath, "utf8");
@@ -205,13 +203,11 @@ export async function runTriage(
     warn(`  claimed a reproduction on ${verdict.evidenceKind} evidence — treating it as not reproduced`);
   }
   const safeToFix = verdict?.reproduced === true && grounded && verdict.blockedReason === "none";
-  await announce(
-    loaded,
-    opts.announceChannel,
+  await announce(loaded, opts.announceChannel,
     safeToFix
       ? `✅ Triage done on #${issue.number} — **reproduced** (size \`${verdict!.size}\`). Ready for \`fix ${issue.number}\`.\n${issue.url}`
       : `🤔 Triage done on #${issue.number} — **${verdict?.blockedReason ?? "did not complete"}**. Needs you.\n${issue.url}`,
-  );
+    opts.announceMessage);
   if (safeToFix) {
     info(`  ${green("reproduced")} — size ${verdict.size}; ready for a fix attempt`);
     await react(loaded, issue, "working");

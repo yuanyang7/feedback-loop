@@ -75,14 +75,28 @@ export class DiscordClient {
     return channel.name ? `#${channel.name}` : "Discord";
   }
 
-  async sendMessage(channelId: string, content: string, replyToId?: string): Promise<void> {
-    await this.request<unknown>(`/channels/${channelId}/messages`, {
+  /** Returns the new message's id, so a long-running job can edit it later. */
+  async sendMessage(channelId: string, content: string, replyToId?: string): Promise<string | null> {
+    const sent = await this.request<{ id?: string }>(`/channels/${channelId}/messages`, {
       method: "POST",
       body: JSON.stringify({
         content: content.slice(0, 1900),
         ...(replyToId ? { message_reference: { message_id: replyToId, fail_if_not_exists: false } } : {}),
       }),
     });
+    return sent?.id ?? null;
+  }
+
+  /**
+   * Rewrite a message in place. A run posts once and edits as it goes, so a
+   * twenty-minute job leaves one line in the channel instead of four — the
+   * reports people actually came to read stay readable.
+   */
+  async editMessage(channelId: string, messageId: string, content: string): Promise<void> {
+    await this.request<unknown>(`/channels/${channelId}/messages/${messageId}`, {
+      method: "PATCH",
+      body: JSON.stringify({ content: content.slice(0, 1900) }),
+    }).catch(() => undefined); // an edit that fails must not take the run with it
   }
 
   async addReaction(channelId: string, messageId: string, emoji: string): Promise<void> {

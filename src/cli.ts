@@ -40,7 +40,7 @@ async function main(): Promise<number> {
   const argv = process.argv.slice(2);
   const command = argv[0];
   const flags = new Set(argv.filter((a) => a.startsWith("--")));
-  const valueFlags = new Set(["--backfill", "--issue", "--announce", "--port"]);
+  const valueFlags = new Set(["--backfill", "--issue", "--announce", "--announce-message", "--port"]);
   const positional = argv.slice(1).filter((a, i) => {
     if (a.startsWith("--")) return false;
     const previous = argv.slice(1)[i - 1];
@@ -85,6 +85,7 @@ async function main(): Promise<number> {
         dryRun,
         issueNumber: i >= 0 ? Number(argv[i + 1]) : undefined,
         announceChannel: a >= 0 ? argv[a + 1] : undefined,
+        announceMessage: msgFlag(argv),
       });
       return 0;
     }
@@ -99,6 +100,7 @@ async function main(): Promise<number> {
         issueNumber: Number(argv[i + 1]),
         dryRun,
         announceChannel: a >= 0 ? argv[a + 1] : undefined,
+        announceMessage: msgFlag(argv),
       });
       return 0;
     }
@@ -115,6 +117,12 @@ async function main(): Promise<number> {
       console.log(USAGE);
       return command ? 1 : 0;
   }
+}
+
+/** The message a chat-started run edits as it progresses. */
+function msgFlag(argv: string[]): string | undefined {
+  const i = argv.indexOf("--announce-message");
+  return i >= 0 ? argv[i + 1] : undefined;
 }
 
 function init(dir: string): number {

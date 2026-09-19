@@ -19,7 +19,7 @@ import { runTriage } from "./triage.js";
 
 export async function runChain(
   loaded: LoadedConfig,
-  opts: { issueNumber: number; dryRun: boolean; announceChannel?: string },
+  opts: { issueNumber: number; dryRun: boolean; announceChannel?: string; announceMessage?: string },
 ): Promise<void> {
   const { config } = loaded;
   const labels = config.github.labels;
@@ -31,12 +31,12 @@ export async function runChain(
   const issue = await github.getIssue(opts.issueNumber).catch(() => null);
   if (!issue) {
     warn(`#${opts.issueNumber} not found.`);
-    await announce(loaded, opts.announceChannel, `#${opts.issueNumber} doesn't exist.`);
+    await announce(loaded, opts.announceChannel, `#${opts.issueNumber} doesn't exist.`, opts.announceMessage);
     return;
   }
   if (issue.state !== "OPEN") {
     warn(`#${opts.issueNumber} is closed.`);
-    await announce(loaded, opts.announceChannel, `#${opts.issueNumber} is closed.`);
+    await announce(loaded, opts.announceChannel, `#${opts.issueNumber} is closed.`, opts.announceMessage);
     return;
   }
 
@@ -44,7 +44,7 @@ export async function runChain(
   if (has(labels.needsInfo)) {
     const message = `#${issue.number} is labelled \`needs-info\` — too thin to act on. It needs specifics before any of this can start.`;
     warn(message);
-    await announce(loaded, opts.announceChannel, message);
+    await announce(loaded, opts.announceChannel, message, opts.announceMessage);
     return;
   }
 
@@ -57,6 +57,8 @@ export async function runChain(
   }
 
   info(`${bold("1/2")} triage`);
+  // Triage reports through the chain's own message rather than finishing it —
+  // the run is not over, and a "done" here would release the lock mid-chain.
   await runTriage(loaded, { issueNumber: issue.number, dryRun: opts.dryRun, announceChannel: undefined });
   if (opts.dryRun) return;
 
@@ -67,24 +69,21 @@ export async function runChain(
   const reproduced = after?.labels.some((l) => l.name === labels.readyToFix) ?? false;
   if (!reproduced) {
     info(`  ${dim("triage did not clear it for a fix — stopping here")}`);
-    await announce(
-      loaded,
-      opts.announceChannel,
+    await announce(loaded, opts.announceChannel,
       `🤔 #${issue.number}: triage stopped short of a fix. It's on the issue, and needs you.\n${issue.url}`,
-    );
+    opts.announceMessage);
     return;
   }
 
   info(`${bold("2/2")} fix`);
-  await announce(
-    loaded,
-    opts.announceChannel,
+  await announce(loaded, opts.announceChannel,
     `✅ #${issue.number} reproduced — starting the fix. Another ten minutes or so.`,
-  );
+    opts.announceMessage);
   await runFix(loaded, {
     issueNumber: issue.number,
     dryRun: false,
     announceChannel: opts.announceChannel,
+    announceMessage: opts.announceMessage,
   });
   info(`${cyan("chain done")}`);
 }

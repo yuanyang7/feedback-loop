@@ -267,9 +267,18 @@ async function handleCommands(
       continue;
     }
 
-    const { pid, logPath } = startWorker(config.target.name, repoPath, command, channel);
+    // Post the run's one message first, then hand its id to the worker so every
+    // later phase edits this line instead of adding another to the channel.
+    const opening =
+      command.kind === "go"
+        ? `⏳ #${command.issue} — reproducing, then fixing. I'll update this message as it goes.`
+        : `⏳ \`${command.kind}\` on #${command.issue} — I'll update this message when it's done.`;
+    const runMessage = dryRun ? null : await discord.sendMessage(channel, opening, message.id).catch(() => null);
+
+    const { pid, logPath } = startWorker(config.target.name, repoPath, command, channel, runMessage);
     claimRun(config.target.name, pid, `${command.kind} #${command.issue}`, command.issue);
     info(`  ${bold(`started ${command.kind} #${command.issue}`)} ${dim(`pid ${pid}`)}`);
+    if (runMessage) continue; // the message above is the reply
     await reply(
       (command.kind === "go"
         ? `On it — #${command.issue}: reproduce, fix, review, PR. Twenty minutes or so, and I'll report at each step.\n`
