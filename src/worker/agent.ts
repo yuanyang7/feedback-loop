@@ -31,6 +31,8 @@ export interface PhaseOptions {
   effort: string;
   /** Passed to the session as a hard spend ceiling. */
   maxBudgetUsd: number;
+  /** Wall-clock ceiling. A blocked session spends nothing, so the budget never saves it. */
+  timeoutMinutes: number;
   /** Appended to the default system prompt — normally the repo's playbook. */
   playbook: string;
   allowedTools: string[];
@@ -79,6 +81,7 @@ however much you found out along the way.`;
     ],
     fullPrompt,
     opts.cwd,
+    opts.timeoutMinutes,
   );
 
   writeFileSync(transcriptPath, stdout);
@@ -162,17 +165,61 @@ function findSessionFile(sessionId: string): string | null {
   return null;
 }
 
-function spawnClaude(args: string[], prompt: string, cwd: string): Promise<string> {
+function spawnClaude(
+  args: string[],
+  prompt: string,
+  cwd: string,
+  timeoutMinutes: number,
+): Promise<string> {
   return new Promise((resolve, reject) => {
-    const child = spawn("claude", args, { cwd, stdio: ["pipe", "pipe", "pipe"] });
+    // detached so the whole process group can be killed: a session that blocks
+    // usually does so on a server it started, and killing only the session
+    // leaves that child holding the pipes open.
+    const child = spawn("claude", args, { cwd, stdio: ["pipe", "pipe", "pipe"], detached: true });
     let stdout = "";
     let stderr = "";
+    let settled = false;
+
+    const timer = setTimeout(
+      () => {
+        if (settled) return;
+        settled = true;
+        try {
+          process.kill(-child.pid!, "SIGKILL");
+        } catch {
+          child.kill("SIGKILL");
+        }
+        reject(
+          new Error(
+            `session exceeded ${timeoutMinutes} minutes of wall clock and was killed. ` +
+              `A blocked session spends nothing, so the spend cap never trips — this is the only ` +
+              `thing that stops it. The usual cause is a command that does not return, such as a ` +
+              `dev server started in the foreground.`,
+          ),
+        );
+      },
+      timeoutMinutes * 60_000,
+    );
+
     child.stdout.on("data", (c: Buffer) => (stdout += c));
     child.stderr.on("data", (c: Buffer) => (stderr += c));
-    child.on("error", reject);
-    child.on("close", () => {
-      if (stdout.trim()) resolve(stdout);
-      else reject(new Error(`claude produced no output. stderr: ${stderr.trim().slice(0, 500)}`));
+    child.on("error", (error) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      reject(error);
+    });
+    // "exit" rather than "close": close waits for every inherited pipe, so one
+    // leaked grandchild would hold this open long after the session is done.
+    child.on("exit", () => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      // Give the streams a beat to flush what is already buffered.
+      setTimeout(() => {
+        if (stdout.trim()) resolve(stdout);
+        else reject(new Error(`claude produced no output. stderr: ${stderr.trim().slice(0, 500)}`));
+      }, 250);
     });
     child.stdin.end(prompt);
   });

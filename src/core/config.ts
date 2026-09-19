@@ -114,6 +114,8 @@ export const ConfigSchema = z.object({
       /** Triage reads code and drives the app; it is not the fix, so it stays cheap. */
       /** Hard ceilings per phase. The daily budget alone is too coarse, and a
        * fix costs several times what reading and reproducing does. */
+      /** Wall clock per phase. The spend caps cannot see a session that hangs. */
+      phaseTimeoutMinutes: z.number().int().positive().default(45),
       triageMaxUsd: z.number().positive().default(3),
       fixMaxUsd: z.number().positive().default(10),
       reviewMaxUsd: z.number().positive().default(4),

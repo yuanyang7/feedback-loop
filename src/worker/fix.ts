@@ -223,6 +223,7 @@ async function runFixInner(
     cwd: worktree.path,
     artifactDir,
     playbook,
+    timeoutMinutes: config.worker.phaseTimeoutMinutes,
   };
 
   let fix: Fix | null = null;

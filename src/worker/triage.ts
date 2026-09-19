@@ -154,6 +154,7 @@ export async function runTriage(
     model: config.worker.triageModel,
     effort: config.worker.triageEffort,
     maxBudgetUsd: config.worker.triageMaxUsd,
+    timeoutMinutes: config.worker.phaseTimeoutMinutes,
     playbook,
     allowedTools: ["Bash", "Read", "Grep", "Glob", "Write", "WebFetch"],
     disallowedTools: ["Edit", "NotebookEdit"],
