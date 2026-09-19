@@ -22,6 +22,7 @@ import { runPhase } from "./agent.js";
 import { ensureWorktree, slugForIssue, type Worktree } from "./worktree.js";
 import { evidenceDir, evidenceInstruction, listEvidence, sweepWorktree } from "./evidence.js";
 import { announce } from "./announce.js";
+import { findingsFrom, parseCiFailure, renderCiFailure } from "./ci.js";
 
 const exec = promisify(execFile);
 
@@ -302,22 +303,57 @@ async function runFixInner(
     spent += reviewRun.costUsd;
     review = reviewRun.verdict;
 
-    if (review?.verdict === "approve") {
-      info(`  ${green("review passed")}`);
-      break;
-    }
-    findings = review?.blocking ?? ["Review did not complete; treat that as a rejection."];
-    warn(`  review rejected: ${findings.length} blocking finding(s)`);
-    review = review ?? null;
+    if (review?.verdict !== "approve") {
+      findings = review?.blocking ?? ["Review did not complete; treat that as a rejection."];
+      warn(`  review rejected: ${findings.length} blocking finding(s)`);
 
-    if (attempt === config.worker.maxFixAttempts) {
-      await escalate(github, loaded, issue, `Review rejected ${config.worker.maxFixAttempts} attempts. Escalating rather than grinding.\n\n` +
-          findings.map((f) => `- ${f}`).join("\n"),
-        opts.announceChannel,
-      );
-      log(target, issue, "review rejected", spent, artifactDir);
-      return null;
+      if (attempt === config.worker.maxFixAttempts) {
+        await escalate(
+          github,
+          loaded,
+          issue,
+          `Review rejected ${config.worker.maxFixAttempts} attempts. Escalating rather than grinding.\n\n` +
+            findings.map((f) => `- ${f}`).join("\n"),
+          opts.announceChannel,
+        );
+        log(target, issue, "review rejected", spent, artifactDir);
+        return null;
+      }
+      continue;
     }
+    info(`  ${green("review passed")}`);
+
+    // The pre-push hook runs full local CI, so a rejection here is an ordinary
+    // outcome of this loop, not an exception. Treat it like a review rejection:
+    // feed what failed back into another attempt.
+    const push = await pushBranch(worktree);
+    if (!push) break;
+
+    warn(`  push rejected by local CI${push.timeoutsOnly ? " (all timeouts)" : ""}`);
+    await github.commentOnIssue(issue.number, renderCiFailure(push, worktree.slug));
+
+    const ciFindings = findingsFrom(push);
+    if (ciFindings.length > 0 && attempt < config.worker.maxFixAttempts) {
+      findings = ciFindings;
+      continue;
+    }
+
+    await announce(
+      loaded,
+      opts.announceChannel,
+      push.timeoutsOnly
+        ? `⏱️ #${issue.number}: CI timed out — the machine was loaded, not the diff. Work is saved; re-run when quieter.\n${issue.url}`
+        : `❌ #${issue.number}: local CI rejected the push. Needs you.\n${issue.url}`,
+    );
+    // A timeout says nothing about the change, so the issue keeps ready-to-fix
+    // and stays in the queue instead of being escalated as a defect.
+    if (!push.timeoutsOnly) {
+      await github.addLabels(issue.number, [config.github.labels.needsDecision]);
+      await github.removeLabels(issue.number, [config.github.labels.readyToFix]);
+    }
+    await github.removeLabels(issue.number, ["in-progress"]);
+    log(target, issue, push.timeoutsOnly ? "CI timed out" : "CI rejected the push", spent, artifactDir);
+    return null;
   }
 
   if (!fix || !review) return null;
@@ -343,10 +379,6 @@ async function openPullRequest(
   artifactDir: string,
   evidenceFiles: string[],
 ): Promise<string> {
-  await exec("git", ["-C", worktree.path, "push", "-u", "origin", worktree.branch], {
-    env: { ...process.env, SKIP_CI_HOOK: process.env.SKIP_CI_HOOK ?? "" },
-  });
-
   const body = [
     `Closes #${issue.number}.`,
     "",
@@ -394,6 +426,24 @@ async function openPullRequest(
     "--label", config.github.labels.agentPr,
   ]);
   return stdout.trim().split("\n").at(-1) ?? "";
+}
+
+/**
+ * Push, and return the CI failure if the hook rejected it. Never bypasses the
+ * hook: a gate this tool can switch off is not a gate.
+ */
+async function pushBranch(worktree: Worktree): Promise<ReturnType<typeof parseCiFailure>> {
+  try {
+    await exec("git", ["-C", worktree.path, "push", "-u", "origin", worktree.branch], {
+      maxBuffer: 32 * 1024 * 1024,
+    });
+    return null;
+  } catch (error) {
+    const err = error as { stdout?: string; stderr?: string };
+    const parsed = parseCiFailure(`${err.stdout ?? ""}\n${err.stderr ?? ""}`);
+    if (parsed) return parsed;
+    throw error; // a genuine git failure is still an exception
+  }
 }
 
 function blockedComment(fix: Fix): string {
