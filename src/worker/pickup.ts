@@ -311,7 +311,11 @@ function warnAboutLegacyQueue(target: string): void {
 /** Why an issue is not in line, or null if it is. */
 export function heldBack(issue: Issue): string | null {
   const names = issue.labels.map((l) => l.name);
-  for (const label of ["needs-decision", "needs-info", "in-progress"]) {
+  // run-failed is here so `auto` never picks it up again on its own: a run
+  // that crashes reproducibly would otherwise be retried every tick forever.
+  // It does not block an explicit ask — nextRequest only refuses needs-info —
+  // which is the whole point of the two being different states.
+  for (const label of ["needs-decision", "needs-info", "in-progress", "run-failed"]) {
     if (names.includes(label)) return label;
   }
   return null;

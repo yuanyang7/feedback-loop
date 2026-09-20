@@ -11,6 +11,7 @@ export const STATE_EMOJI = {
   working: "🔧",
   prReady: "✅",
   needsDecision: "🤔",
+  runFailed: "💥",
   merged: "🚢",
   dropped: "❌",
 } as const;

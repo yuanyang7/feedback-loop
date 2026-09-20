@@ -359,7 +359,11 @@ async function queue(loaded: LoadedConfig): Promise<number> {
   const requested = await readQueue(github, config);
 
   const lined = orderQueue(ready);
-  const held = ready.filter((i) => heldBack(i) !== null);
+  // An explicitly asked-for issue drains whatever heldBack says — nextRequest
+  // refuses only needs-info — so listing it as "set aside" states the opposite
+  // of what will happen. #1225 was shown as held while queued and about to run.
+  const queued = new Set(requested.map((r) => r.issue));
+  const held = ready.filter((i) => heldBack(i) !== null && !queued.has(i.number));
   const agentPrs = prs.filter((pr) => (pr.labels ?? []).some((l) => l.name === config.github.labels.agentPr));
   const running = activeRuns(config.target.name);
 
@@ -422,6 +426,7 @@ async function labels(loaded: LoadedConfig): Promise<number> {
     [config.github.labels.source, "5865F2", "Filed automatically from a chat channel"],
     [config.github.labels.agentReady, "0E8A16", "Cleared for an autonomous fix attempt"],
     [config.github.labels.needsDecision, "D93F0B", "Needs a human decision before any fix"],
+    [config.github.labels.runFailed, "E4E669", "A run fell over; nothing to decide, it just needs another attempt"],
     [config.github.labels.needsInfo, "D4C5F9", "Filed below the confidence floor; ask the reporter for specifics"],
     ["in-progress", "FBCA04", "A worker run is currently working on this"],
     [config.github.labels.agentPr, "5319E7", "Opened by a worker run; awaiting human review and merge"],

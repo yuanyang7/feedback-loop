@@ -361,7 +361,11 @@ async function runFixInner(
             await preserveWork(config, worktree),
           ].join("\n"),
         );
+        // Still a crash, just one that got further. Marking it keeps it out of
+        // "needs a decision" and tells the reader the verb.
+        await github.addLabels(issue.number, [config.github.labels.runFailed]);
         await github.removeLabels(issue.number, ["in-progress"]);
+        await react(loaded, issue, "runFailed");
         log(target, issue, `stopped with work committed (${sha.slice(0, 8)})`, spent, artifactDir);
         return null;
       }
@@ -370,7 +374,7 @@ async function runFixInner(
       // that dies mid-edit leaves its work uncommitted, and #1225 lost an
       // entire correct fix that way. Preserve whatever is there before saying
       // this needs a human, or there is nothing for the human to look at.
-      await escalate(
+      await reportFailure(
         github, loaded, issue,
         `The fix phase did not complete.\n\n\`\`\`\n${fixRun.failure}\n\`\`\`` + (await preserveWork(config, worktree)),
         opts.announceChannel, opts.announceMessage,
@@ -393,7 +397,7 @@ async function runFixInner(
     }
     if (!fix.implemented || !(await hasCommits(worktree, config.target.baseBranch))) {
       warn("  reported success but committed nothing");
-      await escalate(
+      await reportFailure(
         github, loaded, issue,
         "The fix phase reported success but committed nothing." + (await preserveWork(config, worktree)),
         opts.announceChannel, opts.announceMessage,
@@ -691,6 +695,10 @@ async function preserveWork(
   }
 }
 
+/**
+ * The agent thought about this and reached a question only a person can
+ * answer. The reader is expected to read what it wrote and reply.
+ */
 async function escalate(
   github: GitHubClient,
   loaded: LoadedConfig,
@@ -704,6 +712,57 @@ async function escalate(
   await github.addLabels(issue.number, [loaded.config.github.labels.needsDecision]);
   await github.removeLabels(issue.number, ["in-progress", loaded.config.github.labels.readyToFix]);
   await react(loaded, issue, "needsDecision");
+}
+
+/**
+ * The run fell over. Nothing was decided and nothing is being asked of anyone.
+ *
+ * This used to take the same path as a real escalation, which is how three
+ * issues came to wear 🤔 for three unrelated reasons — two of them needing
+ * only another attempt, and no way to tell which without reading each one in
+ * full. A person who looks at this should learn the verb from the label, not
+ * from a paragraph.
+ */
+async function reportFailure(
+  github: GitHubClient,
+  loaded: LoadedConfig,
+  issue: Issue,
+  comment: string,
+  announceChannel?: string,
+  announceMessage?: string,
+): Promise<void> {
+  const labels = loaded.config.github.labels;
+  // Retry once, automatically. A first failure is usually the machine or the
+  // harness rather than the work, and #1207 sat for two days on a conclusion
+  // its blocker had already outlived because nothing ever looked again.
+  //
+  // The label is the counter: an issue that already carries run-failed has now
+  // failed twice, and a third attempt is a person's call, not a loop's.
+  const failedBefore = issue.labels.some((l) => l.name === labels.runFailed);
+  if (!failedBefore) await github.addLabels(issue.number, [labels.requested]);
+
+  await announce(
+    loaded, announceChannel,
+    failedBefore
+      ? `💥 #${issue.number}: the run failed again — nothing to decide, but it has now failed twice. \`go ${issue.number}\` to try once more.\n${issue.url}`
+      : `💥 #${issue.number}: the run failed — nothing to decide. Queued for one automatic retry.\n${issue.url}`,
+    announceMessage,
+  );
+  await github.commentOnIssue(
+    issue.number,
+    `${comment}\n\n---\n\n**This is a failed run, not a question for you.** Nothing here was decided and ` +
+      `nothing is blocked on your judgement.\n\n` +
+      (failedBefore
+        ? `It has now failed twice, so it will **not** retry itself again — a third attempt should be ` +
+          `somebody's decision. Reply \`go ${issue.number}\` in chat to make it.`
+        : `It has been queued (\`${labels.requested}\`) for **one automatic retry** on the next host with a ` +
+          `free slot. If that one fails too, it stops and waits for you.`),
+  );
+  await github.addLabels(issue.number, [labels.runFailed]);
+  // A stale needs-decision from an earlier pass would keep it out of the queue
+  // and keep lying about what it wants.
+  await github.removeLabels(issue.number, ["in-progress", labels.readyToFix, labels.needsDecision]);
+  await react(loaded, issue, "runFailed");
 }
 
 function log(target: string, issue: Issue, summary: string, costUsd: number, artifactDir: string): void {
@@ -774,7 +833,7 @@ function stamp(): string {
 async function react(
   loaded: LoadedConfig,
   issue: Issue,
-  state: "working" | "needsDecision" | "prReady",
+  state: "working" | "needsDecision" | "prReady" | "runFailed",
 ): Promise<void> {
   const link = decodeFooter(issue.body);
   if (!link) return;

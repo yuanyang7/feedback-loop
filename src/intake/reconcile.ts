@@ -108,6 +108,10 @@ function announcement(repo: string, issue: Issue, state: State): string {
       return `👀 ${link} has a pull request open and waiting on you — ${title}`;
     case "needsDecision":
       return `🤔 ${link} needs a decision from you — ${title}`;
+    // Says the verb, because the whole point of this state is that the reader
+    // should not have to open the issue to learn there is nothing to decide.
+    case "runFailed":
+      return `💥 ${link} — the run failed; nothing to decide. Reply \`go ${issue.number}\` to try again — ${title}`;
     case "working":
       return `🔧 ${link} is being worked on — ${title}`;
     case "unclear":
@@ -128,6 +132,10 @@ async function deriveState(github: GitHubClient, issue: Issue): Promise<State> {
     // "not planned" is a decision not to fix; anything else closed we treat as shipped.
     return issue.stateReason === "not_planned" ? "dropped" : "merged";
   }
+  // Before needs-decision: a run that fell over may still carry a stale
+  // decision label from an earlier pass, and "it crashed" is the more useful
+  // of the two to show.
+  if (labels.has("run-failed")) return "runFailed";
   if (labels.has("needs-decision")) return "needsDecision";
   // Filed, but the reporter is still the only one who can make it actionable —
   // so the question mark has to survive a reconcile pass.

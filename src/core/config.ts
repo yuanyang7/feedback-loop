@@ -102,6 +102,14 @@ export const ConfigSchema = z.object({
         source: z.string().default("from-discord"),
         agentReady: z.string().default("agent-ready"),
         needsDecision: z.string().default("needs-decision"),
+        /**
+         * The run fell over: the process died, the budget ran out, no verdict
+         * was written. Kept apart from `needsDecision` because the two ask
+         * opposite things of a person — one wants your judgement, the other
+         * wants nothing from you but another attempt, and a single label for
+         * both meant three issues wearing 🤔 for three different reasons.
+         */
+        runFailed: z.string().default("run-failed"),
         needsInfo: z.string().default("needs-info"),
         /** Applied by triage when a bug was reproduced and nothing blocks a fix. */
         readyToFix: z.string().default("ready-to-fix"),

@@ -222,11 +222,18 @@ export async function runTriage(
     // and knows its worktree is still on disk with a verified reproduction.
     await github.addLabels(issue.number, [config.github.labels.readyToFix]);
   } else {
+    // A verdict naming what blocks it is a judgement the agent reached and a
+    // person has to answer. No verdict at all is the run having fallen over,
+    // which asks nothing of anyone except another attempt — the same word for
+    // both is what made 🤔 meaningless.
+    const crashed = !verdict;
     const why = verdict?.blockedReason ?? "triage-failed";
-    info(`  ${yellow("escalating")} — ${why}`);
-    await github.addLabels(issue.number, [config.github.labels.needsDecision]);
+    info(`  ${yellow(crashed ? "run failed" : "escalating")} — ${why}`);
+    await github.addLabels(issue.number, [
+      crashed ? config.github.labels.runFailed : config.github.labels.needsDecision,
+    ]);
     await github.removeLabels(issue.number, ["in-progress"]);
-    await react(loaded, issue, "needsDecision");
+    await react(loaded, issue, crashed ? "runFailed" : "needsDecision");
     // Nothing was changed and nothing will be, so do not leave a worktree behind.
     if (clean) await removeWorktree(repoPath, worktree);
   }
@@ -352,7 +359,7 @@ function renderVerdict(
 async function react(
   loaded: LoadedConfig,
   issue: Issue,
-  state: "working" | "needsDecision",
+  state: "working" | "needsDecision" | "runFailed",
 ): Promise<void> {
   const link = decodeFooter(issue.body);
   if (!link) return;

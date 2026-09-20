@@ -521,7 +521,7 @@ async function queueLine(loaded: LoadedConfig, role: "all" | "intake" = "all"): 
       : Promise.resolve([]),
   ]);
   const lined = orderQueue(ready);
-  const held = ready.filter((i) => heldBack(i) !== null);
+
   const agentPrs = prs.filter((pr) => (pr.labels ?? []).some((l) => l.name === config.github.labels.agentPr));
   const running =
     role === "intake"
@@ -532,6 +532,11 @@ async function queueLine(loaded: LoadedConfig, role: "all" | "intake" = "all"): 
   // that is the order they will actually start in — folding them together would
   // put a request behind issues it is going to overtake.
   const requested = await readQueue(gh, config);
+  // An explicitly asked-for issue drains whatever heldBack says — nextRequest
+  // refuses only needs-info — so listing it as "set aside" states the opposite
+  // of what will happen. #1225 was shown as held while queued and about to run.
+  const queued = new Set(requested.map((r) => r.issue));
+  const held = ready.filter((i) => heldBack(i) !== null && !queued.has(i.number));
   if (lined.length === 0 && held.length === 0 && requested.length === 0) return "Queue is empty.";
 
   const lines: string[] = [];
