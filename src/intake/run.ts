@@ -9,6 +9,7 @@ import { setState } from "./emoji.js";
 import { encodeFooter } from "./footer.js";
 import { GitHubClient, type Issue } from "./github.js";
 import { heldBack, orderQueue, severityOf } from "../worker/pickup.js";
+import { enqueueRequest, readRequests } from "../worker/requests.js";
 import { anchorOf, groupMessages, renderReport, type Report } from "./group.js";
 import {
   activeRuns, claimRun, concurrencyRefusal, describeRejection, HELP, isOperator, parseCommand,
@@ -263,17 +264,49 @@ async function handleCommands(
     }
 
     const busy = concurrencyRefusal(config.target.name, command.issue, config.worker.maxConcurrentRuns);
-    if (busy) {
-      await reply(describeRejection(command, busy));
+    if (busy && !busy.queueable) {
+      await reply(describeRejection(command, busy.reason));
       continue;
     }
 
     // Check the gate before promising ten minutes. The worker would refuse this
     // in a second anyway, and a promise followed by silence is worse than a
-    // refusal — it leaves someone waiting on a run that already died.
+    // refusal — it leaves someone waiting on a run that already died. This runs
+    // before queueing too: a place in line for work that can never start is the
+    // same broken promise, just delayed.
     const refusal = await gateRefusal(loaded, command);
     if (refusal) {
       await reply(refusal);
+      continue;
+    }
+
+    // At the machine's limit, but the work is sound — take the request rather
+    // than making the person who asked remember to ask again. The notice posted
+    // here is the run's own message: when a slot frees, the worker edits this
+    // line instead of adding another to the channel.
+    if (busy) {
+      if (dryRun) {
+        await reply(`[dry-run] would queue \`${command.kind} #${command.issue}\``);
+        continue;
+      }
+      const notice = await discord
+        .sendMessage(channel, `🕒 #${command.issue} queued — ${busy.reason} I'll start it when a slot frees.`, message.id)
+        .catch(() => null);
+      const { position, alreadyQueued } = enqueueRequest(config.target.name, {
+        issue: command.issue,
+        kind: command.kind,
+        channel,
+        message: notice,
+        by: message.author.username,
+      });
+      if (alreadyQueued) {
+        await reply(`#${command.issue} is already queued, at position ${position}.`);
+      } else if (notice) {
+        recordStatus(config.target.name, command.issue, { botMessage: notice, channel });
+        info(`  ${bold(`queued ${command.kind} #${command.issue}`)} ${dim(`position ${position}`)}`);
+      } else {
+        await reply(`🕒 #${command.issue} queued at position ${position}.`);
+      }
       continue;
     }
 
@@ -464,11 +497,29 @@ async function queueLine(loaded: LoadedConfig): Promise<string> {
   const agentPrs = prs.filter((pr) => (pr.labels ?? []).some((l) => l.name === config.github.labels.agentPr));
   const running = activeRuns(config.target.name);
 
-  if (lined.length === 0 && held.length === 0) return "Queue is empty.";
+  // Asked-for runs are shown apart from the derived queue and above it, because
+  // that is the order they will actually start in — folding them together would
+  // put a request behind issues it is going to overtake.
+  const requested = readRequests(config.target.name);
+  if (lined.length === 0 && held.length === 0 && requested.length === 0) return "Queue is empty.";
 
-  const lines = lined
-    .slice(0, 8)
-    .map((i, n) => `${n === 0 ? "▸" : "  "} **#${i.number}** \`${severityOf(i)}\` ${i.title}`);
+  const lines: string[] = [];
+  if (requested.length > 0) {
+    lines.push(
+      `**Asked for** — starts next, whatever \`auto\` says`,
+      ...requested.map((r, n) => {
+        const title = ready.find((i) => i.number === r.issue)?.title ?? "";
+        return `${n === 0 ? "▸" : "  "} **#${r.issue}** \`${r.kind}\` ${title} — asked by ${r.by}`.replace(/\s+—/, " —");
+      }),
+      "",
+    );
+  }
+
+  lines.push(
+    ...lined
+      .slice(0, 8)
+      .map((i, n) => `${n === 0 && requested.length === 0 ? "▸" : "  "} **#${i.number}** \`${severityOf(i)}\` ${i.title}`),
+  );
   if (lined.length > 8) lines.push(`  …and ${lined.length - 8} more`);
 
   if (running.length > 0) lines.push(`\n🔧 ${running.map((r) => r.what).join(", ")} running`);

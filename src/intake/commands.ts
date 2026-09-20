@@ -126,26 +126,38 @@ export function releaseRun(target: string, pid = process.pid): void {
   writeFileSync(lockPath(target), JSON.stringify(remaining));
 }
 
-/** Why this run cannot start right now, or null. */
+/**
+ * Why this run cannot start right now, or null.
+ *
+ * The two reasons are not the same kind of no. A second run on the same issue
+ * would fight the first over one worktree and must not happen at all; being at
+ * the machine's limit is only "not yet", which is why it is `queueable` — the
+ * caller turns that one into a place in line rather than a refusal.
+ */
 export function concurrencyRefusal(
   target: string,
   issue: number,
   maxConcurrent: number,
-): string | null {
+): { reason: string; queueable: boolean } | null {
   const live = activeRuns(target);
   // Locks written before this field existed still name their issue in `what`.
   const issueOf = (lock: RunLock): number =>
     lock.issue ?? Number(/#(\d+)/.exec(lock.what)?.[1] ?? NaN);
   const sameIssue = live.find((lock) => issueOf(lock) === issue);
   if (sameIssue) {
-    return `\`${sameIssue.what}\` is already running on that issue (started ${sameIssue.at.slice(11, 16)} UTC).`;
+    return {
+      reason: `\`${sameIssue.what}\` is already running on that issue (started ${sameIssue.at.slice(11, 16)} UTC).`,
+      queueable: false,
+    };
   }
   if (live.length >= maxConcurrent) {
     const names = live.map((lock) => `\`${lock.what}\``).join(", ");
-    return (
-      `${names} ${live.length === 1 ? "is" : "are"} running, and this machine is set to ` +
-      `${maxConcurrent} at a time. Raise \`worker.maxConcurrentRuns\` to overlap them.`
-    );
+    return {
+      reason:
+        `${names} ${live.length === 1 ? "is" : "are"} running, and this machine is set to ` +
+        `${maxConcurrent} at a time.`,
+      queueable: true,
+    };
   }
   return null;
 }

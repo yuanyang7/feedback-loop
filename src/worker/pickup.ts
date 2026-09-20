@@ -12,12 +12,18 @@ import { activeRuns, claimRun, startWorker } from "../intake/commands.js";
 import { GitHubClient, type Issue } from "../intake/github.js";
 import { checkGate } from "./gate.js";
 import { recordStatus } from "../core/tracker.js";
+import { dropRequest, readRequests, type RunRequest } from "./requests.js";
 
 export async function pickUpWork(loaded: LoadedConfig, dryRun: boolean): Promise<void> {
   const { config, repoPath } = loaded;
-  if (config.worker.auto === "never") return;
-
   const target = config.target.name;
+
+  // `auto: never` governs what starts unasked. Work a person explicitly asked
+  // for is not that, and must still drain — otherwise turning auto off silently
+  // swallows every queued request instead of just declining to invent new ones.
+  const requests = readRequests(target);
+  if (config.worker.auto === "never" && requests.length === 0) return;
+
   if (activeRuns(target).length >= config.worker.maxConcurrentRuns) return;
 
   const github = new GitHubClient(
@@ -30,6 +36,27 @@ export async function pickUpWork(loaded: LoadedConfig, dryRun: boolean): Promise
     info(`  ${dim(`not picking up work — ${gate.reason}`)}`);
     return;
   }
+
+  // Asked-for work goes first, and goes whatever the auto policy says: someone
+  // typed the issue number, which is the same decision `auto` exists to avoid
+  // making on its own.
+  const requested = await nextRequest(target, github, requests);
+  if (requested) {
+    const { request, issue } = requested;
+    if (dryRun) {
+      info(`  ${dim(`[dry-run] would start queued ${request.kind} #${issue.number}`)}`);
+      return;
+    }
+    dropRequest(target, issue.number);
+    const { pid } = startWorker(
+      target, repoPath, { kind: request.kind, issue: issue.number }, request.channel, request.message,
+    );
+    claimRun(target, pid, `${request.kind} #${issue.number}`, issue.number);
+    info(`  ${bold(`started queued ${request.kind} #${issue.number}`)} ${cyan(issue.title)} ${dim(`pid ${pid}`)}`);
+    return;
+  }
+
+  if (config.worker.auto === "never") return;
 
   const next = await nextIssue(github, config.github.labels.agentReady, config.worker.auto);
   if (!next) return;
@@ -45,6 +72,37 @@ export async function pickUpWork(loaded: LoadedConfig, dryRun: boolean): Promise
   const { pid } = startWorker(target, repoPath, { kind: "go", issue: next.number }, channel, message);
   claimRun(target, pid, `go #${next.number}`, next.number);
   info(`  ${bold(`picked up #${next.number}`)} ${cyan(next.title)} ${dim(`pid ${pid}`)}`);
+}
+
+/**
+ * The oldest queued request that can still run, dropping any that cannot.
+ *
+ * A request can sit here for an hour, which is long enough for the issue to be
+ * closed or for someone to label it `needs-info`. Re-reading GitHub rather than
+ * trusting the queue is what keeps a stale ask from spending ten minutes on
+ * work that was already resolved.
+ */
+async function nextRequest(
+  target: string,
+  github: GitHubClient,
+  requests: RunRequest[],
+): Promise<{ request: RunRequest; issue: Issue } | null> {
+  for (const request of requests) {
+    const issue = await github.getIssue(request.issue).catch(() => null);
+    if (!issue || issue.state !== "OPEN") {
+      info(`  ${dim(`dropping queued #${request.issue} — ${issue ? "closed" : "gone"}`)}`);
+      dropRequest(target, request.issue);
+      continue;
+    }
+    // The same narrow rule the command applied when it took the request: `go`
+    // clears its own gate, but nothing acts on an issue too thin to act on.
+    if (issue.labels.some((l) => l.name === "needs-info")) {
+      info(`  ${dim(`holding queued #${request.issue} — needs-info`)}`);
+      continue;
+    }
+    return { request, issue };
+  }
+  return null;
 }
 
 /** Why an issue is not in line, or null if it is. */
