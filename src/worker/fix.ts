@@ -125,10 +125,10 @@ Capture the same interaction twice where you can — before your change and afte
 see the difference rather than take your word for it.
 
 **If your change alters what anyone sees, a before and after capture is required, not optional.**
-That holds on iOS too: the Simulator cannot be tapped here, but it renders, and
-\`xcrun simctl io booted screenshot\` captures what it rendered — see the playbook. If you genuinely
-cannot capture the surface you changed, say so in \`risks\` and explain what you tried, rather than
-opening a pull request that asks a reviewer to take a visual change on trust.
+That holds on iOS too: the Simulator can be driven with \`idb\` and captured with
+\`xcrun simctl io booted screenshot\` — the playbook has the commands. If you genuinely cannot
+capture the surface you changed, say so in \`risks\` and explain what you tried, rather than opening
+a pull request that asks a reviewer to take a visual change on trust.
 
 Prefer the smallest change that actually fixes the reported problem. A refactor you believe in is
 not in scope, and it makes the diff harder to review.
