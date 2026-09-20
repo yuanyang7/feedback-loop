@@ -2,7 +2,7 @@
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { loadConfig } from "./core/config.js";
-import { bold, cyan, dim, fail, green, info, red, yellow } from "./core/log.js";
+import { bold, cyan, dim, fail, green, info, red, warn, yellow } from "./core/log.js";
 import { readIntakeState, readRunLog } from "./core/state.js";
 import { runIntake } from "./intake/run.js";
 import { runReconcile } from "./intake/reconcile.js";
@@ -68,12 +68,34 @@ async function main(): Promise<number> {
     }
     case "tick": {
       const loaded = loadConfig(dir);
-      await runIntake(loaded, { dryRun, backfill });
-      await runReconcile(loaded, { dryRun });
+      // Intake needs Discord; reconcile and pickup need GitHub. One being
+      // unreachable used to take the whole tick with it, so a Discord outage
+      // also stopped reactions catching up and work being picked up — neither
+      // of which it has anything to do with.
+      let failures = 0;
+      try {
+        await runIntake(loaded, { dryRun, backfill });
+      } catch (error) {
+        failures += 1;
+        warn(`intake failed: ${error instanceof Error ? error.message : String(error)}`);
+      }
+      try {
+        await runReconcile(loaded, { dryRun });
+      } catch (error) {
+        failures += 1;
+        warn(`reconcile failed: ${error instanceof Error ? error.message : String(error)}`);
+      }
       // Reconcile first: a merge that just freed a slot has to be visible
       // before we decide whether there is room for another run.
-      await pickUpWork(loaded, dryRun);
-      return 0;
+      try {
+        await pickUpWork(loaded, dryRun);
+      } catch (error) {
+        failures += 1;
+        warn(`pickup failed: ${error instanceof Error ? error.message : String(error)}`);
+      }
+      // Non-zero tells launchd, and anyone reading the log, that this tick did
+      // not do its job — without it a run of failures looks like a quiet week.
+      return failures > 0 ? 1 : 0;
     }
     case "triage": {
       const issueIndex = argv.indexOf("--issue");

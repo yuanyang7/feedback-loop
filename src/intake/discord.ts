@@ -34,7 +34,13 @@ export interface DiscordMessage {
 export class DiscordClient {
   constructor(private readonly token: string) {}
 
-  private async request<T>(path: string, init: RequestInit = {}): Promise<T> {
+  /**
+   * A dropped network is the common failure here, not a broken request, and it
+   * comes back on its own — so a blip costs a couple of seconds rather than a
+   * whole tick. Only connection-level failures and 5xx are retried; a 4xx is an
+   * answer, and repeating it would just be slower.
+   */
+  private async request<T>(path: string, init: RequestInit = {}, attempt = 1): Promise<T> {
     const res = await fetch(`${API}${path}`, {
       ...init,
       headers: {
@@ -42,7 +48,18 @@ export class DiscordClient {
         "Content-Type": "application/json",
         ...(init.headers ?? {}),
       },
+    }).catch(async (error: Error) => {
+      if (attempt >= 3) throw error;
+      await new Promise((r) => setTimeout(r, attempt * 1500));
+      return { __retry: true } as unknown as Response;
     });
+    if ((res as unknown as { __retry?: boolean }).__retry) {
+      return this.request<T>(path, init, attempt + 1);
+    }
+    if (res.status >= 500 && attempt < 3) {
+      await new Promise((r) => setTimeout(r, attempt * 1500));
+      return this.request<T>(path, init, attempt + 1);
+    }
     if (res.status === 429) {
       const body = (await res.json().catch(() => ({}))) as { retry_after?: number };
       const waitMs = Math.ceil((body.retry_after ?? 1) * 1000) + 250;
