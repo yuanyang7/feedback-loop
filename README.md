@@ -211,11 +211,14 @@ them and nowhere else — and the pull request can only name that path. Embeddin
 not an option for a private repo either: an image link needs a logged-in session, so it will not
 render inline.
 
-So when a run opens a pull request, or when triage escalates, it posts the captures to the channel
-it was started from. Discord hosts them and is already open on the phone that got the notification.
-Before/after pairs are kept adjacent, since the comparison is the argument and a lone "after" says
-much less. Ten files or 8MB, whichever comes first; the rest stay on disk and the message says how
-many were left.
+So a run attaches them to its own message — the same one it has been editing, not a second one
+after it. Discord hosts the files and is already open on the phone that got the notification.
+
+Not only screenshots. One run captured none at all, because the surface was iOS and could not be
+driven, and its logs were the entire argument — including a file proving the CI failure that
+rejected it was pre-existing and unrelated. Nobody saw it for a day. Images come first, before/after
+pairs adjacent since the comparison is the argument, then logs and diffs. Ten files or 8MB,
+whichever comes first, with the message saying how many were left behind.
 
 ## Reactions
 

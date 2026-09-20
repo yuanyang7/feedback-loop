@@ -472,16 +472,12 @@ async function runFixInner(
 
   const prUrl = await openPullRequest(github, config, worktree, issue, fix, review, triageNotes, spent, artifactDir, listEvidence(evidence));
   info(`  ${green("PR open")} ${prUrl}`);
-  await announce(loaded, opts.announceChannel, `✅ PR open for #${issue.number} — $${spent.toFixed(2)}. Waiting on you.\n${prUrl}`, opts.announceMessage);
-  // The screenshots are the argument for the change, and the pull request can
-  // only name a path that means nothing away from this machine.
-  await shareEvidence(
-    loaded,
-    opts.announceChannel,
-    opts.announceMessage,
-    artifactDir,
-    `📎 What changed, for #${issue.number}`,
-  );
+  const done = `✅ PR open for #${issue.number} — $${spent.toFixed(2)}. Waiting on you.\n${prUrl}`;
+  await announce(loaded, opts.announceChannel, done, opts.announceMessage);
+  // The evidence is the argument for the change, and the pull request can only
+  // name a path that means nothing away from this machine. Attached to the run's
+  // own message rather than posted after it, so this still costs one line.
+  await shareEvidence(loaded, opts.announceChannel, opts.announceMessage, artifactDir, done);
   await github.removeLabels(issue.number, ["in-progress", config.github.labels.readyToFix]);
   await react(loaded, issue, "prReady");
   log(target, issue, `PR opened: ${prUrl}`, spent, artifactDir);

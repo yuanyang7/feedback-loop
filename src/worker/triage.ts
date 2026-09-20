@@ -204,11 +204,14 @@ export async function runTriage(
     warn(`  claimed a reproduction on ${verdict.evidenceKind} evidence — treating it as not reproduced`);
   }
   const safeToFix = verdict?.reproduced === true && grounded && verdict.blockedReason === "none";
-  await announce(loaded, opts.announceChannel,
-    safeToFix
-      ? `✅ Triage done on #${issue.number} — **reproduced** (size \`${verdict!.size}\`). Ready for \`fix ${issue.number}\`.\n${issue.url}`
-      : `🤔 Triage done on #${issue.number} — **${verdict?.blockedReason ?? "did not complete"}**. Needs you.\n${issue.url}`,
-    opts.announceMessage);
+  const done = safeToFix
+    ? `✅ Triage done on #${issue.number} — **reproduced** (size \`${verdict!.size}\`). Ready for \`fix ${issue.number}\`.\n${issue.url}`
+    : `🤔 Triage done on #${issue.number} — **${verdict?.blockedReason ?? "did not complete"}**. Needs you.\n${issue.url}`;
+  await announce(loaded, opts.announceChannel, done, opts.announceMessage);
+  // Attached to the same message, not posted after it — #1215 captured no
+  // screenshots at all and its logs were the entire argument, and they never
+  // reached anyone.
+  await shareEvidence(loaded, opts.announceChannel, opts.announceMessage, artifactDir, done);
   if (safeToFix) {
     info(`  ${green("reproduced")} — size ${verdict.size}; ready for a fix attempt`);
     await react(loaded, issue, "working");

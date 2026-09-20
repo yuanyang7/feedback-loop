@@ -127,6 +127,8 @@ export class DiscordClient {
     content: string,
     files: Array<{ name: string; bytes: Buffer }>,
     replyToId?: string,
+    /** Edit this message instead of posting, so a run still costs one line. */
+    editMessageId?: string,
   ): Promise<string | null> {
     const form = new FormData();
     form.append(
@@ -141,8 +143,11 @@ export class DiscordClient {
       form.append(`files[${i}]`, new Blob([new Uint8Array(f.bytes)]), f.name);
     });
 
-    const res = await fetch(`${API}/channels/${channelId}/messages`, {
-      method: "POST",
+    const path = editMessageId
+      ? `${API}/channels/${channelId}/messages/${editMessageId}`
+      : `${API}/channels/${channelId}/messages`;
+    const res = await fetch(path, {
+      method: editMessageId ? "PATCH" : "POST",
       headers: { Authorization: `Bot ${this.token}` }, // no content-type: fetch sets the boundary
       body: form,
     });

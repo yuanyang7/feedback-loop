@@ -22,22 +22,40 @@ import { pairEvidence } from "../dashboard/scan.js";
 const MAX_FILES = 10;
 const MAX_BYTES = 8 * 1024 * 1024;
 
+/**
+ * Attaches to the run's own message when there is one, rather than adding a
+ * second. Posting separately would undo the reason that message exists: a
+ * twenty-minute job should leave one line in a channel meant for bug reports,
+ * and evidence is part of the result, not an announcement of its own.
+ */
 export async function shareEvidence(
   loaded: LoadedConfig,
   channelId: string | undefined,
-  replyToId: string | undefined,
+  runMessageId: string | undefined,
   artifactDir: string,
-  caption: string,
+  /**
+   * The message's full text, not a caption. Editing replaces content, so this
+   * has to repeat what announce just wrote or the run's result is overwritten
+   * by a note about its attachments.
+   */
+  text: string,
 ): Promise<void> {
   if (!channelId) return;
 
   const dir = evidenceDir(artifactDir);
-  const images = listEvidence(dir).filter((f) => /\.(png|jpe?g|webp|gif)$/i.test(f));
-  if (images.length === 0) return;
+  // Not only images: #1215 captured no screenshots at all — the surface was
+  // iOS and could not be driven — and its logs were the whole argument.
+  const all = listEvidence(dir);
+  const images = all.filter((f) => /\.(png|jpe?g|webp|gif)$/i.test(f));
+  const logs = all.filter((f) => /\.(txt|log|diff|patch|json)$/i.test(f));
+  if (images.length === 0 && logs.length === 0) return;
 
   // Complete before/after pairs first and kept adjacent — the comparison is the
   // whole argument, and a lone "after" says much less than the two together.
-  const ordered = pairEvidence(images).flatMap((p) => [p.before, p.after, p.single].filter(Boolean) as string[]);
+  const ordered = [
+    ...pairEvidence(images).flatMap((p) => [p.before, p.after, p.single].filter(Boolean) as string[]),
+    ...logs,
+  ];
 
   const files: Array<{ name: string; bytes: Buffer }> = [];
   let total = 0;
@@ -56,7 +74,7 @@ export async function shareEvidence(
 
   const discord = new DiscordClient(readSecret(loaded.config.discord.tokenFile, "DISCORD_BOT_TOKEN"));
   const sent = await discord
-    .sendFiles(channelId, `${caption}${note}`, files, replyToId)
+    .sendFiles(channelId, `${text}${note}`, files, undefined, runMessageId)
     .catch(() => null);
   info(`  ${dim(sent ? `shared ${files.length} evidence file(s)` : "could not share evidence")}`);
 }
