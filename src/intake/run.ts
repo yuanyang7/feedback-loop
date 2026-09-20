@@ -91,11 +91,13 @@ export async function runIntake(loaded: LoadedConfig, opts: IntakeOptions): Prom
   let duplicates = 0;
   let skipped = 0;
 
-  for (const [index, report] of reports.entries()) {
-    const decision = decisions[index]!;
+  // Iterate decisions, not reports: one report can now yield several issues,
+  // which is what happens when someone raises two unrelated things in a row.
+  for (const decision of decisions) {
+    const report = reports[decision.index]!;
     const anchor = anchorOf(report);
     const link = messageUrl(config.discord.guildId, config.discord.channelId, anchor.id);
-    const label = `${dim(`#${index}`)} ${report.authorName}: ${decision.kind} ${dim(`(${decision.confidence.toFixed(2)})`)}`;
+    const label = `${dim(`#${decision.index}`)} ${report.authorName}: ${decision.kind} ${dim(`(${decision.confidence.toFixed(2)})`)}`;
 
     if (decision.kind === "noise" || decision.kind === "question") {
       skipped += 1;
