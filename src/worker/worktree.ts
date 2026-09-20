@@ -4,7 +4,7 @@
  * base branch, and the repo's own rules forbid working on it directly.
  */
 import { execFile } from "node:child_process";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import { dim, info } from "../core/log.js";
@@ -57,9 +57,13 @@ export async function ensureWorktree(
  * already has the right ones, so clone them with APFS copy-on-write: the copy
  * is independent but shares blocks, so it costs seconds and almost no disk.
  *
- * Only when the lockfiles match. A clone against a different lockfile would be
- * wrong in a way that surfaces much later as a confusing build failure, and
- * `npm ci` is the correct answer there — just the slow one.
+ * Two things have to hold. The lockfiles must match, and the source's own
+ * install must not be stale — the main checkout here was ten days behind its
+ * lockfile and missing a package, so a clone of it produced a worktree whose
+ * tests could not even load. Comparing lockfiles alone assumes the source
+ * installed its own, which is exactly the assumption that failed.
+ *
+ * When either check says no, `npm ci` is the correct answer — just the slow one.
  */
 async function seedDependencies(repoPath: string, worktreePath: string): Promise<void> {
   for (const pkg of ["", "mobile"]) {
@@ -67,6 +71,10 @@ async function seedDependencies(repoPath: string, worktreePath: string): Promise
     const to = join(worktreePath, pkg, "node_modules");
     if (!existsSync(from) || existsSync(to)) continue;
     if (!sameLockfile(join(repoPath, pkg), join(worktreePath, pkg))) continue;
+    if (!installIsCurrent(join(repoPath, pkg))) {
+      info(`  ${dim(`${pkg || "root"} node_modules is older than its lockfile — not cloning it`)}`);
+      continue;
+    }
 
     // -c asks for a clone; without APFS this silently falls back to a real copy,
     // which is slower but still correct, so there is nothing to detect.
@@ -79,6 +87,19 @@ async function seedDependencies(repoPath: string, worktreePath: string): Promise
       info(`  ${dim(`cloned ${pkg || "root"} node_modules in ${Math.round((Date.now() - started) / 1000)}s`)}`);
     }
   }
+}
+
+/**
+ * npm rewrites node_modules/.package-lock.json on every install, so an install
+ * older than the lockfile is one that never ran for the current dependencies.
+ * Comparing contents instead would have to model optional platform packages,
+ * which are legitimately absent; the timestamp does not.
+ */
+function installIsCurrent(dir: string): boolean {
+  const lock = join(dir, "package-lock.json");
+  const installed = join(dir, "node_modules", ".package-lock.json");
+  if (!existsSync(lock) || !existsSync(installed)) return false;
+  return statSync(installed).mtimeMs >= statSync(lock).mtimeMs;
 }
 
 function sameLockfile(a: string, b: string): boolean {
