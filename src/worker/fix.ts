@@ -20,7 +20,7 @@ import { GitHubClient, type Issue } from "../intake/github.js";
 import { checkGate } from "./gate.js";
 import { runPhase } from "./agent.js";
 import { ensureWorktree, slugForIssue, type Worktree } from "./worktree.js";
-import { evidenceDir, evidenceInstruction, listEvidence, sweepWorktree } from "./evidence.js";
+import { evidenceDir, evidenceInstruction, hasImages, listEvidence, sweepWorktree, touchesUi } from "./evidence.js";
 import { announce } from "./announce.js";
 import { findingsFrom, parseCiFailure, renderCiFailure } from "./ci.js";
 import { shareEvidence } from "./share.js";
@@ -123,6 +123,12 @@ ${evidenceInstruction(evidencePath)}
 
 Capture the same interaction twice where you can — before your change and after — so a reviewer can
 see the difference rather than take your word for it.
+
+**If your change alters what anyone sees, a before and after capture is required, not optional.**
+That holds on iOS too: the Simulator cannot be tapped here, but it renders, and
+\`xcrun simctl io booted screenshot\` captures what it rendered — see the playbook. If you genuinely
+cannot capture the surface you changed, say so in \`risks\` and explain what you tried, rather than
+opening a pull request that asks a reviewer to take a visual change on trust.
 
 Prefer the smallest change that actually fixes the reported problem. A refactor you believe in is
 not in scope, and it makes the diff harder to review.
@@ -470,7 +476,17 @@ async function runFixInner(
 
   if (!fix || !review) return null;
 
-  const prUrl = await openPullRequest(github, config, worktree, issue, fix, review, triageNotes, spent, artifactDir, listEvidence(evidence));
+  // A prompt asking for captures is a hope; this is the check. A visual change
+  // with nothing to look at is the one thing a reviewer cannot assess remotely.
+  const uiWithoutCaptures = touchesUi(fix.filesChanged) && !hasImages(evidence);
+  if (uiWithoutCaptures) {
+    warn("  the diff changes UI but the run captured no images — saying so on the PR");
+  }
+
+  const prUrl = await openPullRequest(
+    github, config, worktree, issue, fix, review, triageNotes, spent, artifactDir,
+    listEvidence(evidence), uiWithoutCaptures,
+  );
   info(`  ${green("PR open")} ${prUrl}`);
   const done = `✅ PR open for #${issue.number} — $${spent.toFixed(2)}. Waiting on you.\n${prUrl}`;
   await announce(loaded, opts.announceChannel, done, opts.announceMessage);
@@ -495,6 +511,7 @@ async function openPullRequest(
   spent: number,
   artifactDir: string,
   evidenceFiles: string[],
+  uiWithoutCaptures: boolean,
 ): Promise<string> {
   const body = [
     `Closes #${issue.number}.`,
@@ -513,6 +530,14 @@ async function openPullRequest(
           ...evidenceFiles.map((f) => `- \`${f}\``),
         ]
       : ["", "_No evidence files were captured._"]),
+    ...(uiWithoutCaptures
+      ? [
+          "",
+          "> [!WARNING]",
+          "> **This changes the UI and the run captured no before/after images.** Nothing here shows",
+          "> what it looks like now, so that part has to be checked by hand.",
+        ]
+      : []),
     "",
     "## What to scrutinise",
     "",

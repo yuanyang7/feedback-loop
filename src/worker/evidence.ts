@@ -56,6 +56,24 @@ export async function sweepWorktree(worktreePath: string, dir: string): Promise<
   return copied;
 }
 
+// src/app holds both pages and API routes under Next's App Router, and a route
+// handler renders nothing — treating one as a UI change asks for screenshots of
+// a JSON endpoint.
+const NOT_UI = /(^src\/app\/api\/)|(\.test\.[cm]?[jt]sx?$)|(\.config\.[cm]?[jt]s$)/;
+const UI_PATH = /(\.tsx$)|(^mobile\/src\/)|(^src\/components\/)|(^src\/app\/)|(\.css$)/;
+
+/**
+ * Whether this change alters what someone sees. A rule in a prompt is a hope;
+ * this is what turns "capture the UI" into something that can be checked.
+ */
+export function touchesUi(changedPaths: string[]): boolean {
+  return changedPaths.some((p) => UI_PATH.test(p) && !NOT_UI.test(p));
+}
+
+export function hasImages(dir: string): boolean {
+  return listEvidence(dir).some((f) => /\.(png|jpe?g|webp|gif|mp4|webm)$/i.test(f));
+}
+
 export function listEvidence(dir: string): string[] {
   if (!existsSync(dir)) return [];
   return readdirSync(dir).filter((f) => !f.startsWith("."));
