@@ -84,6 +84,21 @@ export class GitHubClient {
     return number;
   }
 
+  /**
+   * An issue's comments, oldest first. Read directly rather than through the
+   * search index for the same reason `getIssue` is: a comment written a second
+   * ago has to be visible to the next call, or queueing an issue and draining
+   * it in the same minute loses the detail.
+   */
+  async issueComments(number: number): Promise<Array<{ body: string; createdAt: string }>> {
+    const out = await this.gh([
+      "issue", "view", String(number), "--repo", this.repo, "--json", "comments",
+    ]).catch(() => "");
+    if (!out.trim()) return [];
+    const parsed = JSON.parse(out) as { comments?: Array<{ body: string; createdAt: string }> };
+    return parsed.comments ?? [];
+  }
+
   async commentOnIssue(number: number, body: string): Promise<void> {
     await this.gh(["issue", "comment", String(number), "--repo", this.repo, "--body", body]);
   }

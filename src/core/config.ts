@@ -27,6 +27,33 @@ const DEFAULT_DENY_PATHS = [
 ];
 
 export const ConfigSchema = z.object({
+  /**
+   * Which half of the pipeline this host runs.
+   *
+   * The whole tool on one machine is `all`, and that stays the default. The
+   * split exists because the stages want opposite things from a host: intake
+   * needs only two HTTP APIs but needs to be awake at 3am, and the worker
+   * needs Xcode, a Simulator, worktrees and a local database but can perfectly
+   * well be asleep. A NAS can be the first and can never be the second.
+   *
+   *   all      intake, reconcile and pickup, as before.
+   *   intake   chat in, issues out, commands accepted. Starts no runs, ever —
+   *            there is nothing here to run them on. Asked-for work is put on
+   *            the GitHub queue instead, and waits for a worker host.
+   *   worker   drains that queue. Reads no chat: the Discord cursor is a
+   *            single-writer value and two hosts advancing it would each skip
+   *            what the other consumed.
+   *
+   * Set it per host (`--role`, or FEEDBACK_LOOP_ROLE) rather than per config,
+   * so that the deployment is what says which host is which — and so the two
+   * configs differ only where the hosts genuinely differ (where the token
+   * files are, which model backend), never in what they think their job is.
+   */
+  host: z
+    .object({
+      role: z.enum(["all", "intake", "worker"]).default("all"),
+    })
+    .prefault({}),
   target: z.object({
     /** Short slug used for state and run directories. */
     name: z.string().min(1),
@@ -78,6 +105,19 @@ export const ConfigSchema = z.object({
         needsInfo: z.string().default("needs-info"),
         /** Applied by triage when a bug was reproduced and nothing blocks a fix. */
         readyToFix: z.string().default("ready-to-fix"),
+        /**
+         * The run queue. A person asked for this issue and no host has picked
+         * it up yet.
+         *
+         * This is a label rather than a local file because the two hosts have
+         * to share it and cannot share a disk: a network mount drops in
+         * exactly the condition this design exists to survive (the Mac asleep
+         * or off the LAN), and syncing a file with two writers is
+         * last-write-wins with no ordering. Both hosts already talk to GitHub,
+         * it needs no new transport or secret, and a human can see the queue
+         * in a browser.
+         */
+        requested: z.string().default("fl:requested"),
         agentPr: z.string().default("agent-pr"),
       })
       .prefault({}),
@@ -173,10 +213,25 @@ export type Config = z.infer<typeof ConfigSchema>;
 
 export interface LoadedConfig {
   config: Config;
-  /** Absolute path to the target checkout. */
-  repoPath: string;
+  /**
+   * Absolute path to the target checkout, or null when the config was loaded
+   * standalone — an intake host has no clone and does not want one. Nullable
+   * rather than a placeholder so that anything needing a repo has to say so
+   * and fails at the type level, not at 3am in a container.
+   */
+  repoPath: string | null;
   /** Absolute path to .feedback-loop/playbook.md, if present. */
   playbookPath: string | null;
+}
+
+/** The checkout, or an error naming why this host does not have one. */
+export function requireRepo(loaded: LoadedConfig): string {
+  if (loaded.repoPath) return loaded.repoPath;
+  throw new Error(
+    "This needs a checkout of the target repo, and none was loaded — the config came from " +
+      "--config rather than from inside a repo. Worker runs belong on a host with the repo, " +
+      "Xcode and the local database; an intake host queues them instead.",
+  );
 }
 
 function expandHome(p: string): string {
@@ -194,6 +249,51 @@ export function findConfigDir(start: string): string | null {
     if (parent === dir) return null;
     dir = parent;
   }
+}
+
+/**
+ * Load a config file directly, with no repo around it.
+ *
+ * `loadConfig` walks up from a directory looking for `.feedback-loop/` inside
+ * the target checkout, which is the right thing on a developer machine and
+ * impossible on a host that deliberately has no checkout. Same schema, same
+ * validation; only the discovery differs.
+ */
+export function loadConfigFile(file: string): LoadedConfig {
+  const path = resolve(expandHome(file));
+  if (!existsSync(path)) throw new Error(`No config file at ${path}`);
+  const config = ConfigSchema.parse(YAML.parse(readFileSync(path, "utf8")));
+
+  // A playbook alongside the config is honoured if present, but an intake host
+  // has no use for one: it is the worker's system prompt, and no worker runs
+  // here. Not shipping it to the NAS is one less copy of how to build the app.
+  const playbookPath = join(dirname(path), "playbook.md");
+
+  // An explicit target.path still wins — a worker host may well prefer to name
+  // its checkout in the config rather than be run from inside it.
+  // A relative target.path resolves against the config file, not the working
+  // directory. `loadConfig` resolves it against the repo root, and a path that
+  // means a different checkout depending on where you happened to run from is
+  // the kind of difference that only shows up once, in production.
+  return {
+    config,
+    repoPath: config.target.path ? resolve(dirname(path), expandHome(config.target.path)) : null,
+    playbookPath: existsSync(playbookPath) ? playbookPath : null,
+  };
+}
+
+/**
+ * The role this process is running as. The flag wins over the environment,
+ * which wins over the config — so a one-off invocation can always override a
+ * host's standing setting without editing anything.
+ */
+export function resolveRole(config: Config, flag?: string): Config["host"]["role"] {
+  const candidate = flag ?? process.env.FEEDBACK_LOOP_ROLE;
+  if (candidate === undefined) return config.host.role;
+  if (candidate !== "all" && candidate !== "intake" && candidate !== "worker") {
+    throw new Error(`Unknown role "${candidate}" — expected all, intake or worker.`);
+  }
+  return candidate;
 }
 
 export function loadConfig(start: string): LoadedConfig {

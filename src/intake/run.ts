@@ -1,4 +1,4 @@
-import { readSecret, type LoadedConfig } from "../core/config.js";
+import { readSecret, requireRepo, type LoadedConfig } from "../core/config.js";
 import { bold, cyan, dim, info, warn, yellow } from "../core/log.js";
 import { makeClassifier } from "../core/llm.js";
 import { appendRunLog, readIntakeState, writeIntakeState } from "../core/state.js";
@@ -9,7 +9,7 @@ import { setState } from "./emoji.js";
 import { encodeFooter } from "./footer.js";
 import { GitHubClient, type Issue } from "./github.js";
 import { heldBack, orderQueue, severityOf } from "../worker/pickup.js";
-import { enqueueRequest, readRequests } from "../worker/requests.js";
+import { enqueueRequest, readQueue } from "../worker/queue.js";
 import { anchorOf, groupMessages, renderReport, type Report } from "./group.js";
 import {
   activeRuns, claimRun, concurrencyRefusal, describeRejection, HELP, isOperator, parseCommand,
@@ -21,6 +21,11 @@ export interface IntakeOptions {
   dryRun: boolean;
   /** On a fresh cursor, process this many recent messages instead of skipping them. */
   backfill: number;
+  /**
+   * `intake` when this host has no checkout and cannot run anything, so every
+   * accepted command becomes a queued request rather than a process.
+   */
+  role?: "all" | "intake";
 }
 
 export async function runIntake(loaded: LoadedConfig, opts: IntakeOptions): Promise<void> {
@@ -38,7 +43,7 @@ export async function runIntake(loaded: LoadedConfig, opts: IntakeOptions): Prom
 
   // Command-only channels are polled first and independently: they carry no
   // reports, so nothing here reaches the classifier or costs anything.
-  await pollCommandChannels(loaded, discord, state, opts.dryRun);
+  await pollCommandChannels(loaded, discord, state, opts.dryRun, opts.role ?? "all");
 
   // First run: adopt the newest message as the cursor rather than filing the
   // entire channel history as issues. --backfill opts into some history.
@@ -68,7 +73,7 @@ export async function runIntake(loaded: LoadedConfig, opts: IntakeOptions): Prom
   // Commands are pulled out before classification: they are instructions to the
   // tool, not reports about the product, and filing them as issues would be
   // both wrong and expensive.
-  const remaining = await handleCommands(loaded, discord, messages, opts.dryRun);
+  const remaining = await handleCommands(loaded, discord, messages, opts.dryRun, undefined, true, opts.role ?? "all");
 
   const reports = groupMessages(remaining, {
     ignoreAuthorIds: config.discord.ignoreAuthorIds,
@@ -223,8 +228,9 @@ async function handleCommands(
   dryRun: boolean,
   channel: string = loaded.config.discord.channelId,
   requireMention = true,
+  role: "all" | "intake" = "all",
 ): Promise<DiscordMessage[]> {
-  const { config, repoPath } = loaded;
+  const { config } = loaded;
   const botIds = config.discord.mentionTriggerIds;
   const remaining: DiscordMessage[] = [];
 
@@ -251,11 +257,11 @@ async function handleCommands(
       continue;
     }
     if (command.kind === "status") {
-      await reply(await statusLine(loaded));
+      await reply(await statusLine(loaded, role));
       continue;
     }
     if (command.kind === "queue") {
-      await reply(await queueLine(loaded));
+      await reply(await queueLine(loaded, role));
       continue;
     }
     if (command.kind === "ready") {
@@ -263,7 +269,14 @@ async function handleCommands(
       continue;
     }
 
-    const busy = concurrencyRefusal(config.target.name, command.issue, config.worker.maxConcurrentRuns);
+    // On an intake host there is nothing to be busy with: no run has ever
+    // started here and none can. Every accepted command is a queued request,
+    // which is not a degraded path — it is the same mechanism a busy machine
+    // already used, with the limit permanently at zero.
+    const busy =
+      role === "intake"
+        ? { reason: "no worker host is awake right now.", queueable: true }
+        : concurrencyRefusal(config.target.name, command.issue, config.worker.maxConcurrentRuns);
     if (busy && !busy.queueable) {
       await reply(describeRejection(command, busy.reason));
       continue;
@@ -292,7 +305,7 @@ async function handleCommands(
       const notice = await discord
         .sendMessage(channel, `🕒 #${command.issue} queued — ${busy.reason} I'll start it when a slot frees.`, message.id)
         .catch(() => null);
-      const { position, alreadyQueued } = enqueueRequest(config.target.name, {
+      const { position, alreadyQueued } = await enqueueRequest(github(loaded), config, {
         issue: command.issue,
         kind: command.kind,
         channel,
@@ -326,7 +339,7 @@ async function handleCommands(
     // The run's message is the one that ages worst — it says "starting", then
     // "stopped, needs you", and stays that way after the work ships.
     if (runMessage) recordStatus(config.target.name, command.issue, { botMessage: runMessage, channel });
-    const { pid, logPath } = startWorker(config.target.name, repoPath, command, channel, runMessage);
+    const { pid, logPath } = startWorker(config.target.name, requireRepo(loaded), command, channel, runMessage);
     claimRun(config.target.name, pid, `${command.kind} #${command.issue}`, command.issue);
     info(`  ${bold(`started ${command.kind} #${command.issue}`)} ${dim(`pid ${pid}`)}`);
     if (runMessage) continue; // the message above is the reply
@@ -453,6 +466,7 @@ async function pollCommandChannels(
   discord: DiscordClient,
   state: ReturnType<typeof readIntakeState>,
   dryRun: boolean,
+  role: "all" | "intake" = "all",
 ): Promise<void> {
   const channels = loaded.config.discord.commandChannelIds;
   if (channels.length === 0) return;
@@ -471,7 +485,7 @@ async function pollCommandChannels(
     if (messages.length === 0) continue;
 
     if (seen !== null) {
-      await handleCommands(loaded, discord, messages, dryRun, channel, false);
+      await handleCommands(loaded, discord, messages, dryRun, channel, false, role);
     }
     cursors[channel] = messages.at(-1)!.id;
     changed = true;
@@ -482,25 +496,42 @@ async function pollCommandChannels(
   }
 }
 
-async function queueLine(loaded: LoadedConfig): Promise<string> {
+/** A client for the target repo, from wherever the token is configured. */
+function github(loaded: LoadedConfig): GitHubClient {
   const { config } = loaded;
-  const github = new GitHubClient(
+  return new GitHubClient(
     config.target.repo,
     config.github.tokenFile ? readSecret(config.github.tokenFile, "GITHUB_TOKEN") : undefined,
   );
-  const [ready, prs] = await Promise.all([
-    github.listIssues({ labels: [config.github.labels.agentReady], state: "open" }),
-    github.listPullRequests({ state: "open" }),
+}
+
+async function queueLine(loaded: LoadedConfig, role: "all" | "intake" = "all"): Promise<string> {
+  const { config } = loaded;
+  const gh = github(loaded);
+  const [ready, prs, inProgress] = await Promise.all([
+    gh.listIssues({ labels: [config.github.labels.agentReady], state: "open" }),
+    gh.listPullRequests({ state: "open" }),
+    // What is running is a local process list — except on an intake host,
+    // where the run is on a machine this one cannot see. There the answer has
+    // to come from GitHub, and `in-progress` is exactly the claim a run makes
+    // when it starts. Asking `queue` from a phone and being told "nothing is
+    // running" while the worker is mid-fix is the worst possible answer.
+    role === "intake"
+      ? gh.listIssues({ labels: ["in-progress"], state: "open" })
+      : Promise.resolve([]),
   ]);
   const lined = orderQueue(ready);
   const held = ready.filter((i) => heldBack(i) !== null);
   const agentPrs = prs.filter((pr) => (pr.labels ?? []).some((l) => l.name === config.github.labels.agentPr));
-  const running = activeRuns(config.target.name);
+  const running =
+    role === "intake"
+      ? inProgress.map((i) => ({ what: `#${i.number}` }))
+      : activeRuns(config.target.name);
 
   // Asked-for runs are shown apart from the derived queue and above it, because
   // that is the order they will actually start in — folding them together would
   // put a request behind issues it is going to overtake.
-  const requested = readRequests(config.target.name);
+  const requested = await readQueue(gh, config);
   if (lined.length === 0 && held.length === 0 && requested.length === 0) return "Queue is empty.";
 
   const lines: string[] = [];
@@ -532,20 +563,25 @@ async function queueLine(loaded: LoadedConfig): Promise<string> {
   return lines.join("\n");
 }
 
-async function statusLine(loaded: LoadedConfig): Promise<string> {
-  const github = new GitHubClient(
-    loaded.config.target.repo,
-    loaded.config.github.tokenFile ? readSecret(loaded.config.github.tokenFile, "GITHUB_TOKEN") : undefined,
-  );
+async function statusLine(loaded: LoadedConfig, role: "all" | "intake" = "all"): Promise<string> {
+  const gh = github(loaded);
   const labels = loaded.config.github.labels;
-  const [ready, readyToFix, blocked, prs] = await Promise.all([
-    github.listIssues({ labels: [labels.agentReady], state: "open" }),
-    github.listIssues({ labels: [labels.readyToFix], state: "open" }),
-    github.listIssues({ labels: [labels.needsDecision], state: "open" }),
-    github.listPullRequests({ state: "open" }),
+  const [ready, readyToFix, blocked, prs, inProgress] = await Promise.all([
+    gh.listIssues({ labels: [labels.agentReady], state: "open" }),
+    gh.listIssues({ labels: [labels.readyToFix], state: "open" }),
+    gh.listIssues({ labels: [labels.needsDecision], state: "open" }),
+    gh.listPullRequests({ state: "open" }),
+    // As in `queueLine`: on an intake host the run is on a machine this one
+    // cannot see, so the local process list is always empty and would report
+    // "nothing running" straight through a fix. `in-progress` is the claim a
+    // run makes on GitHub, and it is visible from both hosts.
+    role === "intake" ? gh.listIssues({ labels: ["in-progress"], state: "open" }) : Promise.resolve([]),
   ]);
   const agentPrs = prs.filter((p) => (p.labels ?? []).some((l) => l.name === labels.agentPr));
-  const running = activeRuns(loaded.config.target.name);
+  const running =
+    role === "intake"
+      ? inProgress.map((i) => ({ what: `#${i.number}` }))
+      : activeRuns(loaded.config.target.name);
   return [
     running.length > 0
       ? `🔧 running: ${running.map((r) => `\`${r.what}\``).join(", ")}`

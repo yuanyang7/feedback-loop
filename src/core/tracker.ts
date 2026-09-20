@@ -13,9 +13,9 @@
  * reconcile can tell whether anything needs rewriting rather than rewriting
  * unconditionally.
  */
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
-import { stateDir } from "./state.js";
+import { copyFileSync, existsSync, readFileSync } from "node:fs";
+import { join } from "node:path";
+import { stateDir, writeJsonAtomically } from "./state.js";
 
 export interface IssueStatus {
   issue: number;
@@ -44,7 +44,20 @@ export function readStatuses(target: string): Table {
   try {
     return JSON.parse(readFileSync(file, "utf8")) as Table;
   } catch {
-    return {};
+    // Damaged is not empty. Empty means the bot has never said anything;
+    // this file being unreadable means it has, and we no longer know where —
+    // so every message it posted becomes unrewritable, permanently and
+    // silently. Refuse instead, and keep what is left to repair.
+    const kept = `${file}.corrupt`;
+    try {
+      copyFileSync(file, kept);
+    } catch {
+      // A courtesy, not a requirement.
+    }
+    throw new Error(
+      `${file} is damaged — most likely an unclean shutdown mid-write. A copy is at ${kept}. ` +
+        `Deleting it makes the bot forget every message it has posted, so stale ones stay stale.`,
+    );
   }
 }
 
@@ -80,9 +93,7 @@ export function recordStatus(
     updatedAt: new Date().toISOString(),
   };
 
-  const file = path(target);
-  mkdirSync(dirname(file), { recursive: true });
-  writeFileSync(file, `${JSON.stringify({ ...table, [key]: next }, null, 2)}\n`);
+  writeJsonAtomically(path(target), { ...table, [key]: next });
   return next;
 }
 

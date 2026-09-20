@@ -109,6 +109,34 @@ before and an after screenshot side by side. `status` covers everything else.
 
 Schedule `tick` however you like — launchd, cron, a loop. It is idempotent and cheap.
 
+### Splitting it across two machines
+
+The stages want opposite things from a host. Intake needs two HTTP APIs and
+needs to be awake at 3am; the worker needs a checkout, a simulator and a local
+database, and can perfectly well be asleep. `--role` lets one always-on box —
+a NAS, a VPS — do the first while your laptop does the second.
+
+| role | `tick` does |
+|---|---|
+| `all` | intake, reconcile, pickup. The default, and what one machine does. |
+| `intake` | chat in, issues out, commands accepted. Starts nothing, ever. |
+| `worker` | drains the queue. Reads no chat. |
+
+Work asked for on the intake host is queued as a GitHub label (`fl:requested`)
+rather than a local file, because the two hosts cannot share a disk — and a
+mount that drops when the laptop sleeps is no use in a design whose whole point
+is surviving the laptop sleeping. The worker host drains it when it wakes.
+
+`--config <path>` loads a config file directly, for a host that has no checkout
+of the target repo and does not want one. [docs/synology.md](docs/synology.md)
+is the full design and a runbook for doing this on a Synology NAS —
+`deploy/package.sh` builds a copyable payload and `deploy/synology-loop.sh` is
+the loop that runs it. No container: every production dependency is pure
+JavaScript, so `node_modules` built anywhere runs anywhere.
+
+Two hosts must not both run intake: the Discord cursor has a single writer, and
+two of them would each advance it past messages the other never saw.
+
 ### Letting it pick up work
 
 With `worker.auto` set, a tick also starts the next queued run when there is room.

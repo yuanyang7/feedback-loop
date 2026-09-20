@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { loadConfig } from "./core/config.js";
+import { loadConfig, loadConfigFile, resolveRole, type LoadedConfig } from "./core/config.js";
 import { bold, cyan, dim, fail, green, info, red, warn, yellow } from "./core/log.js";
 import { readIntakeState, readRunLog } from "./core/state.js";
 import { runIntake } from "./intake/run.js";
@@ -10,11 +10,12 @@ import { runTriage } from "./worker/triage.js";
 import { runFix } from "./worker/fix.js";
 import { serveDashboard } from "./dashboard/server.js";
 import { runChain } from "./worker/chain.js";
-import { heldBack, orderQueue, pickUpWork, severityOf, sizeOf, startsUnasked } from "./worker/pickup.js";
+import { adoptBareRequests, heldBack, orderQueue, pickUpWork, promoteAutoWork, severityOf, sizeOf, startsUnasked } from "./worker/pickup.js";
 import { activeRuns } from "./intake/commands.js";
 import { STATE_EMOJI } from "./intake/emoji.js";
 import { readSecret } from "./core/config.js";
 import { GitHubClient } from "./intake/github.js";
+import { readQueue } from "./worker/queue.js";
 
 const USAGE = `feedback-loop — chat feedback in, reviewed pull requests out.
 
@@ -22,7 +23,8 @@ Usage:
   feedback-loop init [dir]            Scaffold .feedback-loop/ in a target repo
   feedback-loop intake [dir]          One intake tick: new messages -> issues
   feedback-loop reconcile [dir]       Sync chat reactions with GitHub state
-  feedback-loop tick [dir]            intake + reconcile
+  feedback-loop tick [dir]            Run the stages this host's role covers
+  feedback-loop pickup [dir]          Start the next queued run, if there is room
   feedback-loop triage [dir]          Reproduce + size one agent-ready issue (never fixes)
   feedback-loop fix [dir]             Fix + adversarial review + open a PR (never merges)
   feedback-loop go [dir] --issue N    triage + fix + PR in one run (still never merges)
@@ -37,19 +39,54 @@ Options:
   --issue N        triage/fix: act on this issue instead of picking one
   --announce ID    triage/fix: post the result to this Discord channel when done
   --port N         dashboard: listen on this port (default 7777)
+  --config PATH    Load this config file instead of finding one in a repo.
+                   For a host that has no checkout and does not want one.
+                   Also read from FEEDBACK_LOOP_CONFIG.
+  --role ROLE      all | intake | worker. Which half of the pipeline this host
+                   runs; overrides host.role and FEEDBACK_LOOP_ROLE.
+
+Roles
+  all      Everything on one machine. The default, and what a laptop does.
+  intake   Chat in, issues out, commands accepted — and nothing ever run here.
+           Asked-for work goes on the GitHub queue for a worker host to drain.
+  worker   Drains that queue. Reads no chat: the Discord cursor has one writer,
+           and two hosts advancing it would each skip what the other consumed.
 `;
 
 async function main(): Promise<number> {
   const argv = process.argv.slice(2);
   const command = argv[0];
   const flags = new Set(argv.filter((a) => a.startsWith("--")));
-  const valueFlags = new Set(["--backfill", "--issue", "--announce", "--announce-message", "--port"]);
+  const valueFlags = new Set(["--backfill", "--issue", "--announce", "--announce-message", "--port", "--config", "--role"]);
   const positional = argv.slice(1).filter((a, i) => {
     if (a.startsWith("--")) return false;
     const previous = argv.slice(1)[i - 1];
     return previous === undefined || !valueFlags.has(previous);
   });
   const dir = positional[0] ?? process.cwd();
+
+  /**
+   * Find the config, from a repo or from a path. `--config` exists for a host
+   * that deliberately has no clone of the target: `loadConfig` walks up
+   * looking for `.feedback-loop/` inside one, which cannot succeed there.
+   */
+  const load = (): LoadedConfig => {
+    const i = argv.indexOf("--config");
+    if (i >= 0) return loadConfigFile(argv[i + 1]!);
+    // FEEDBACK_LOOP_CONFIG lets a container set this once, so that every
+    // command run inside it — a tick, a `status` over docker exec — finds the
+    // same config without the flag being repeated in three places.
+    const fromEnv = process.env.FEEDBACK_LOOP_CONFIG;
+    return fromEnv ? loadConfigFile(fromEnv) : loadConfig(dir);
+  };
+  const roleIndex = argv.indexOf("--role");
+  // `--role` with nothing after it is a typo, not a request for the default.
+  // Falling through silently would leave a host running the wrong half.
+  if (roleIndex >= 0 && (argv[roleIndex + 1] ?? "").startsWith("--")) {
+    fail("--role needs a value: all, intake or worker.");
+    return 1;
+  }
+  const roleFlag = roleIndex >= 0 ? argv[roleIndex + 1] : undefined;
 
   const backfillIndex = argv.indexOf("--backfill");
   const backfill = backfillIndex >= 0 ? Number(argv[backfillIndex + 1] ?? 0) : 0;
@@ -59,49 +96,71 @@ async function main(): Promise<number> {
     case "init":
       return init(dir);
     case "intake": {
-      await runIntake(loadConfig(dir), { dryRun, backfill });
+      const loaded = load();
+      await runIntake(loaded, { dryRun, backfill, role: intakeRole(resolveRole(loaded.config, roleFlag)) });
       return 0;
     }
     case "reconcile": {
-      await runReconcile(loadConfig(dir), { dryRun });
+      await runReconcile(load(), { dryRun });
       return 0;
     }
     case "tick": {
-      const loaded = loadConfig(dir);
-      // Intake needs Discord; reconcile and pickup need GitHub. One being
-      // unreachable used to take the whole tick with it, so a Discord outage
-      // also stopped reactions catching up and work being picked up — neither
-      // of which it has anything to do with.
+      const loaded = load();
+      const role = resolveRole(loaded.config, roleFlag);
+
+      // One being unreachable used to take the whole tick with it, so a
+      // Discord outage also stopped reactions catching up and work being
+      // picked up — neither of which it has anything to do with.
       let failures = 0;
-      try {
-        await runIntake(loaded, { dryRun, backfill });
-      } catch (error) {
-        failures += 1;
-        warn(`intake failed: ${error instanceof Error ? error.message : String(error)}`);
+      const attempt = async (what: string, fn: () => Promise<void>): Promise<void> => {
+        try {
+          await fn();
+        } catch (error) {
+          failures += 1;
+          warn(`${what} failed: ${error instanceof Error ? error.message : String(error)}`);
+        }
+      };
+
+      // A worker host reads no chat at all. The Discord cursor is a
+      // single-writer value: two hosts polling would each advance it past
+      // messages the other never saw, and reports would vanish at random.
+      if (role !== "worker") {
+        await attempt("intake", () => runIntake(loaded, { dryRun, backfill, role: intakeRole(role) }));
+        await attempt("reconcile", () => runReconcile(loaded, { dryRun }));
       }
-      try {
-        await runReconcile(loaded, { dryRun });
-      } catch (error) {
-        failures += 1;
-        warn(`reconcile failed: ${error instanceof Error ? error.message : String(error)}`);
-      }
+
       // Reconcile first: a merge that just freed a slot has to be visible
       // before we decide whether there is room for another run.
-      try {
-        await pickUpWork(loaded, dryRun);
-      } catch (error) {
-        failures += 1;
-        warn(`pickup failed: ${error instanceof Error ? error.message : String(error)}`);
+      if (role === "intake") {
+        // Adopt first: a request labelled by hand has no detail, and no
+        // worker host can add it. Then consider promoting new work.
+        await attempt("adopting", () => tendQueue(loaded, dryRun));
+        await attempt("queueing", () => promoteAutoWork(loaded, dryRun));
+      } else {
+        await attempt("pickup", () => pickUpWork(loaded, dryRun, role));
       }
-      // Non-zero tells launchd, and anyone reading the log, that this tick did
-      // not do its job — without it a run of failures looks like a quiet week.
+
+      // Non-zero tells launchd, DSM's Task Scheduler, and anyone reading the
+      // log, that this tick did not do its job — without it a run of failures
+      // looks like a quiet week.
       return failures > 0 ? 1 : 0;
+    }
+    case "pickup": {
+      const loaded = load();
+      const role = resolveRole(loaded.config, roleFlag);
+      if (role === "intake") {
+        await tendQueue(loaded, dryRun);
+        await promoteAutoWork(loaded, dryRun);
+        return 0;
+      }
+      await pickUpWork(loaded, dryRun, role);
+      return 0;
     }
     case "triage": {
       const issueIndex = argv.indexOf("--issue");
       const issueNumber = issueIndex >= 0 ? Number(argv[issueIndex + 1]) : undefined;
       const a = argv.indexOf("--announce");
-      await runTriage(loadConfig(dir), {
+      await runTriage(load(), {
         dryRun,
         issueNumber,
         announceChannel: a >= 0 ? argv[a + 1] : undefined,
@@ -112,7 +171,7 @@ async function main(): Promise<number> {
     case "fix": {
       const i = argv.indexOf("--issue");
       const a = argv.indexOf("--announce");
-      await runFix(loadConfig(dir), {
+      await runFix(load(), {
         dryRun,
         issueNumber: i >= 0 ? Number(argv[i + 1]) : undefined,
         announceChannel: a >= 0 ? argv[a + 1] : undefined,
@@ -127,7 +186,7 @@ async function main(): Promise<number> {
         fail("go needs an issue: feedback-loop go . --issue 1213");
         return 1;
       }
-      await runChain(loadConfig(dir), {
+      await runChain(load(), {
         issueNumber: Number(argv[i + 1]),
         dryRun,
         announceChannel: a >= 0 ? argv[a + 1] : undefined,
@@ -136,16 +195,16 @@ async function main(): Promise<number> {
       return 0;
     }
     case "queue":
-      return queue(dir);
+      return queue(load());
     case "status":
-      return status(dir);
+      return status(load());
     case "dashboard": {
       const p = argv.indexOf("--port");
-      await serveDashboard(loadConfig(dir), p >= 0 ? Number(argv[p + 1]) : 7777);
+      await serveDashboard(load(), p >= 0 ? Number(argv[p + 1]) : 7777);
       return 0;
     }
     case "labels":
-      return labels(dir);
+      return labels(load());
     default:
       console.log(USAGE);
       return command ? 1 : 0;
@@ -175,8 +234,23 @@ function init(dir: string): number {
   return 0;
 }
 
-async function status(dir: string): Promise<number> {
-  const { config } = loadConfig(dir);
+/** Fill in the detail on any request that arrived as a bare label. */
+async function tendQueue(loaded: LoadedConfig, dryRun: boolean): Promise<void> {
+  const { config } = loaded;
+  const github = new GitHubClient(
+    config.target.repo,
+    config.github.tokenFile ? readSecret(config.github.tokenFile, "GITHUB_TOKEN") : undefined,
+  );
+  await adoptBareRequests(loaded, github, dryRun);
+}
+
+/** The role, narrowed to what intake itself distinguishes. */
+function intakeRole(role: "all" | "intake" | "worker"): "all" | "intake" {
+  return role === "intake" ? "intake" : "all";
+}
+
+async function status(loaded: LoadedConfig): Promise<number> {
+  const { config } = loaded;
   const target = config.target.name;
   const github = new GitHubClient(
     config.target.repo,
@@ -270,8 +344,8 @@ async function status(dir: string): Promise<number> {
   return 0;
 }
 
-async function queue(dir: string): Promise<number> {
-  const { config } = loadConfig(dir);
+async function queue(loaded: LoadedConfig): Promise<number> {
+  const { config } = loaded;
   const github = new GitHubClient(
     config.target.repo,
     config.github.tokenFile ? readSecret(config.github.tokenFile, "GITHUB_TOKEN") : undefined,
@@ -280,6 +354,9 @@ async function queue(dir: string): Promise<number> {
     github.listIssues({ labels: [config.github.labels.agentReady], state: "open" }),
     github.listPullRequests({ state: "open" }),
   ]);
+  // Asked-for runs are shown above the derived queue, because that is the
+  // order they actually start in — one of these overtakes everything below.
+  const requested = await readQueue(github, config);
 
   const lined = orderQueue(ready);
   const held = ready.filter((i) => heldBack(i) !== null);
@@ -294,6 +371,14 @@ async function queue(dir: string): Promise<number> {
         : config.worker.auto === "never"
           ? `auto is off — start one with ${cyan("feedback-loop go . --issue N")}`
           : null;
+
+  if (requested.length > 0) {
+    console.log(`\n  ${bold("asked for")} ${dim("(starts next, whatever auto says)")}`);
+    for (const r of requested) {
+      const title = ready.find((i) => i.number === r.issue)?.title ?? "";
+      console.log(`    ${green(r.kind.padEnd(6))} #${r.issue}  ${dim(`by ${r.by}`.padEnd(18))} ${title.slice(0, 40)}`);
+    }
+  }
 
   console.log(`\n  ${bold("in line")} ${dim(`(${config.github.labels.agentReady}, highest severity first)`)}`);
   if (lined.length === 0) {
@@ -327,8 +412,8 @@ async function queue(dir: string): Promise<number> {
   return 0;
 }
 
-async function labels(dir: string): Promise<number> {
-  const { config } = loadConfig(dir);
+async function labels(loaded: LoadedConfig): Promise<number> {
+  const { config } = loaded;
   const github = new GitHubClient(
     config.target.repo,
     config.github.tokenFile ? readSecret(config.github.tokenFile, "GITHUB_TOKEN") : undefined,
@@ -341,6 +426,7 @@ async function labels(dir: string): Promise<number> {
     ["in-progress", "FBCA04", "A worker run is currently working on this"],
     [config.github.labels.agentPr, "5319E7", "Opened by a worker run; awaiting human review and merge"],
     [config.github.labels.readyToFix, "0E8A16", "Reproduced by triage; cleared for a fix attempt"],
+    [config.github.labels.requested, "1D76DB", "Someone asked for a run on this; waiting for a worker host"],
     ["severity:high", "B60205", "Data loss, or a core flow is unusable"],
     ["severity:medium", "D93F0B", "A real feature is broken for some users"],
     ["severity:low", "FEF2C0", "Cosmetic, rare, or a minor annoyance"],
@@ -363,6 +449,12 @@ function formatAge(minutes: number): string {
 
 const SAMPLE_CONFIG = `# feedback-loop — target configuration
 # Lives in the target repo so the tool itself stays generic and publishable.
+
+# Which half of the pipeline a host runs. Leave this alone unless you are
+# splitting across two machines — see docs/synology.md. Prefer setting it per
+# host with --role or FEEDBACK_LOOP_ROLE, so both hosts can share one config.
+# host:
+#   role: all                  # all | intake | worker
 
 target:
   name: my-app                 # slug for local state and run directories

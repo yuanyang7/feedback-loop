@@ -8,7 +8,7 @@
 import { mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { z } from "zod";
-import { readSecret, type LoadedConfig } from "../core/config.js";
+import { readSecret, type LoadedConfig, requireRepo } from "../core/config.js";
 import { bold, cyan, dim, green, info, warn, yellow } from "../core/log.js";
 import { appendRunLog, runsDir } from "../core/state.js";
 import { DiscordClient } from "../intake/discord.js";
@@ -105,7 +105,10 @@ export async function runTriage(
   loaded: LoadedConfig,
   opts: { issueNumber?: number; dryRun: boolean; announceChannel?: string; announceMessage?: string },
 ): Promise<void> {
-  const { config, repoPath, playbookPath } = loaded;
+  const { config, playbookPath } = loaded;
+  // Fails here rather than three GitHub writes later: a host with no checkout
+  // has no business having reached a triage run at all.
+  const repoPath = requireRepo(loaded);
   const target = config.target.name;
 
   const github = new GitHubClient(

@@ -10,7 +10,7 @@ import { join } from "node:path";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { z } from "zod";
-import { readSecret, type LoadedConfig } from "../core/config.js";
+import { readSecret, type LoadedConfig, requireRepo } from "../core/config.js";
 import { bold, cyan, dim, green, info, red, warn, yellow } from "../core/log.js";
 import { appendRunLog, runsDir } from "../core/state.js";
 import { DiscordClient } from "../intake/discord.js";
@@ -233,7 +233,8 @@ async function runFixInner(
   opts: { issueNumber?: number; dryRun: boolean; announceChannel?: string; announceMessage?: string },
   onClaim: (issue: Issue) => void,
 ): Promise<Issue | null> {
-  const { config, repoPath, playbookPath } = loaded;
+  const { config, playbookPath } = loaded;
+  const repoPath = requireRepo(loaded);
   const target = config.target.name;
   const labels = config.github.labels;
 
@@ -355,8 +356,9 @@ async function runFixInner(
             fixRun.failure ?? "unknown",
             "```",
             "",
-            `It had already committed \`${sha.slice(0, 8)}\` in \`.worktrees/${worktree.slug}\`, so the work is not lost.`,
-            "Re-run `feedback-loop fix` to continue from there, or review that commit directly.",
+            `It had already committed \`${sha.slice(0, 8)}\`, so the work is not lost.`,
+            "Re-run `feedback-loop fix` to continue from there, or read the branch below.",
+            await preserveWork(config, worktree),
           ].join("\n"),
         );
         await github.removeLabels(issue.number, ["in-progress"]);
@@ -364,22 +366,38 @@ async function runFixInner(
         return null;
       }
       warn(`  fix phase failed: ${fixRun.failure}`);
-      await escalate(github, loaded, issue, `The fix phase did not complete.\n\n\`\`\`\n${fixRun.failure}\n\`\`\``, opts.announceChannel, opts.announceMessage);
+      // Nothing was committed, but that does not mean nothing was done — a run
+      // that dies mid-edit leaves its work uncommitted, and #1225 lost an
+      // entire correct fix that way. Preserve whatever is there before saying
+      // this needs a human, or there is nothing for the human to look at.
+      await escalate(
+        github, loaded, issue,
+        `The fix phase did not complete.\n\n\`\`\`\n${fixRun.failure}\n\`\`\`` + (await preserveWork(config, worktree)),
+        opts.announceChannel, opts.announceMessage,
+      );
       log(target, issue, "fix phase failed", spent, artifactDir);
       return null;
     }
     if (fix.blockedReason !== "none") {
       warn(`  blocked: ${fix.blockedReason}`);
-      const branch = (await hasCommits(worktree, config.target.baseBranch))
-        ? await pushForInspection(config, worktree)
-        : "";
-      await escalate(github, loaded, issue, blockedComment(fix) + branch, opts.announceChannel, opts.announceMessage);
+      // No hasCommits guard: preserveWork returns "" when there is genuinely
+      // nothing, and a blocked run that edited before it stopped is precisely
+      // the case worth rescuing.
+      await escalate(
+        github, loaded, issue,
+        blockedComment(fix) + (await preserveWork(config, worktree)),
+        opts.announceChannel, opts.announceMessage,
+      );
       log(target, issue, `blocked: ${fix.blockedReason}`, spent, artifactDir);
       return null;
     }
     if (!fix.implemented || !(await hasCommits(worktree, config.target.baseBranch))) {
       warn("  reported success but committed nothing");
-      await escalate(github, loaded, issue, "The fix phase reported success but committed nothing.", opts.announceChannel, opts.announceMessage);
+      await escalate(
+        github, loaded, issue,
+        "The fix phase reported success but committed nothing." + (await preserveWork(config, worktree)),
+        opts.announceChannel, opts.announceMessage,
+      );
       log(target, issue, "no commits", spent, artifactDir);
       return null;
     }
@@ -411,7 +429,7 @@ async function runFixInner(
 
       const stuck = repeats >= config.worker.maxRepeatedFindings;
       if (stuck || attempt >= config.worker.maxFixAttempts) {
-        const branch = await pushForInspection(config, worktree);
+        const branch = await preserveWork(config, worktree);
         await escalate(
           github,
           loaded,
@@ -616,16 +634,55 @@ function blockedComment(fix: Fix): string {
  * never bypassed: a branch that cannot pass is still worth reading, but it must
  * not be mistaken for one that did.
  */
-async function pushForInspection(
+/**
+ * Get the work off this laptop before giving up on it.
+ *
+ * An escalation used to leave everything in `.worktrees/<slug>`, which is not
+ * somewhere a person can look from a phone, from GitHub, or from any machine
+ * but this one. Worse, a run killed before it committed — an agent that ends
+ * its turn waiting for a build that will never call it back, say — left work
+ * that existed nowhere at all once the worktree was reused.
+ *
+ * So anything an escalating run produced gets committed and pushed. The branch
+ * is explicitly not a candidate for merge: it is a place to look.
+ */
+async function preserveWork(
   config: LoadedConfig["config"],
   worktree: Worktree,
 ): Promise<string> {
+  const { stdout: dirty } = await exec("git", ["-C", worktree.path, "status", "--porcelain"]);
+  let wip = false;
+  if (dirty.trim()) {
+    // --no-verify: the pre-push hook runs the full CI suite, and a half-finished
+    // tree will rightly fail it. Refusing the commit here would mean the only
+    // copy of the work stays on one disk, which is the thing being fixed. The
+    // comment below says plainly that this branch was never verified.
+    await exec("git", ["-C", worktree.path, "add", "-A"]);
+    await exec("git", [
+      "-C", worktree.path, "commit", "--no-verify", "-m",
+      "wip: work in progress from a run that stopped\n\nCommitted by feedback-loop so an escalation does not strand it on one\nmachine. Not reviewed, not verified, not a merge candidate.",
+    ]);
+    wip = true;
+  }
+
+  if (!(await hasCommits(worktree, config.target.baseBranch))) return "";
+
   const compare = `https://github.com/${config.target.repo}/compare/${config.target.baseBranch}...${worktree.branch}`;
   try {
-    await exec("git", ["-C", worktree.path, "push", "-u", "origin", worktree.branch], {
-      maxBuffer: 32 * 1024 * 1024,
-    });
-    return `\n\nThe branch is pushed for inspection — no PR: [\`${worktree.branch}\`](${compare})`;
+    // The pre-push hook runs the full CI suite. A branch the agent finished
+    // with should still face it — "local CI rejected it" is information worth
+    // having. A WIP commit of a half-edited tree would only fail it, and
+    // failing means stranding the work, so that case alone skips the hook.
+    await exec("git", [
+      "-C", worktree.path, "push", ...(wip ? ["--no-verify"] : []), "-u", "origin", worktree.branch,
+    ], { maxBuffer: 32 * 1024 * 1024 });
+    return (
+      `\n\nThe branch is pushed so you can look at it — no PR: [\`${worktree.branch}\`](${compare})` +
+      (wip
+        ? "\n\n⚠️ Its last commit is work this run left uncommitted, committed automatically and " +
+          "**pushed without running CI**. Read it as a scratch state, not as a change to merge."
+        : "")
+    );
   } catch (error) {
     const failure = parseCiFailure(`${(error as { stdout?: string }).stdout ?? ""}`);
     return failure
