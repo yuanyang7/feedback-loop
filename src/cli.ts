@@ -1,7 +1,7 @@
 #!/usr/bin/env node
-import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { loadConfig, loadConfigFile, resolveRole, type LoadedConfig } from "./core/config.js";
+import { loadConfig, loadConfigFile, requireRepo, resolveRole, type LoadedConfig } from "./core/config.js";
 import { bold, cyan, dim, fail, green, info, red, warn, yellow } from "./core/log.js";
 import { readIntakeState, readRunLog } from "./core/state.js";
 import { runIntake } from "./intake/run.js";
@@ -9,6 +9,7 @@ import { runReconcile } from "./intake/reconcile.js";
 import { runTriage } from "./worker/triage.js";
 import { runFix } from "./worker/fix.js";
 import { serveDashboard } from "./dashboard/server.js";
+import { watchRun } from "./worker/watch.js";
 import { runChain } from "./worker/chain.js";
 import { adoptBareRequests, heldBack, orderQueue, pickUpWork, promoteAutoWork, severityOf, sizeOf, startsUnasked } from "./worker/pickup.js";
 import { activeRuns } from "./intake/commands.js";
@@ -31,6 +32,7 @@ Usage:
   feedback-loop queue [dir]           What runs next, in order, and what is held back
   feedback-loop status [dir]          Queue counts, recent runs, and caps
   feedback-loop dashboard [dir]       Local page: runs, verdicts, before/after screenshots
+  feedback-loop watch [dir] --issue N Follow a running phase as it happens
   feedback-loop labels [dir]          Create the labels this tool expects
 
 Options:
@@ -201,6 +203,31 @@ async function main(): Promise<number> {
     case "dashboard": {
       const p = argv.indexOf("--port");
       await serveDashboard(load(), p >= 0 ? Number(argv[p + 1]) : 7777);
+      return 0;
+    }
+    case "watch": {
+      const loaded = loadConfig(dir);
+      const at = argv.indexOf("--issue");
+      const n = at >= 0 ? Number(argv[at + 1]) : NaN;
+      if (!Number.isInteger(n) || n <= 0) {
+        fail("watch needs --issue N.");
+        return 1;
+      }
+      const repo = requireRepo(loaded);
+      const worktrees = join(repo, ".worktrees");
+      const dirs = existsSync(worktrees)
+        ? readdirSync(worktrees).filter((d: string) => d.startsWith(`issue-${n}-`))
+        : [];
+      if (dirs.length === 0) {
+        fail(`No worktree for #${n} — nothing has run on it yet.`);
+        return 1;
+      }
+      // A finished run is still worth reading back, so say which case this is
+      // rather than refusing when nothing is live.
+      if (!activeRuns(loaded.config.target.name).some((r) => r.issue === n)) {
+        warn(`No live run on #${n} — showing the last session in its worktree.`);
+      }
+      await watchRun(join(worktrees, dirs[0]!));
       return 0;
     }
     case "labels":
