@@ -1,0 +1,62 @@
+/**
+ * Putting the evidence where it can actually be looked at.
+ *
+ * A run's screenshots live under ~/.feedback-loop, which is reachable from the
+ * machine that produced them and nowhere else. The pull request references the
+ * path, which is no use on a phone — and embedding them in the pull request is
+ * not an option either: this is a private repo, so an image link needs a
+ * logged-in session and will not render inline.
+ *
+ * So they go to Discord, which hosts them and is already open on the phone that
+ * got the notification.
+ */
+import { readFileSync, statSync } from "node:fs";
+import { join } from "node:path";
+import { readSecret, type LoadedConfig } from "../core/config.js";
+import { dim, info } from "../core/log.js";
+import { DiscordClient } from "../intake/discord.js";
+import { evidenceDir, listEvidence } from "./evidence.js";
+import { pairEvidence } from "../dashboard/scan.js";
+
+/** Discord takes ten per message; a before/after pair is two. */
+const MAX_FILES = 10;
+const MAX_BYTES = 8 * 1024 * 1024;
+
+export async function shareEvidence(
+  loaded: LoadedConfig,
+  channelId: string | undefined,
+  replyToId: string | undefined,
+  artifactDir: string,
+  caption: string,
+): Promise<void> {
+  if (!channelId) return;
+
+  const dir = evidenceDir(artifactDir);
+  const images = listEvidence(dir).filter((f) => /\.(png|jpe?g|webp|gif)$/i.test(f));
+  if (images.length === 0) return;
+
+  // Complete before/after pairs first and kept adjacent — the comparison is the
+  // whole argument, and a lone "after" says much less than the two together.
+  const ordered = pairEvidence(images).flatMap((p) => [p.before, p.after, p.single].filter(Boolean) as string[]);
+
+  const files: Array<{ name: string; bytes: Buffer }> = [];
+  let total = 0;
+  for (const name of ordered) {
+    if (files.length >= MAX_FILES) break;
+    const path = join(dir, name);
+    const size = statSync(path).size;
+    if (total + size > MAX_BYTES) break;
+    files.push({ name, bytes: readFileSync(path) });
+    total += size;
+  }
+  if (files.length === 0) return;
+
+  const omitted = ordered.length - files.length;
+  const note = omitted > 0 ? `\n<sub>${omitted} more in \`${dir}\`</sub>` : "";
+
+  const discord = new DiscordClient(readSecret(loaded.config.discord.tokenFile, "DISCORD_BOT_TOKEN"));
+  const sent = await discord
+    .sendFiles(channelId, `${caption}${note}`, files, replyToId)
+    .catch(() => null);
+  info(`  ${dim(sent ? `shared ${files.length} evidence file(s)` : "could not share evidence")}`);
+}

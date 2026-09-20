@@ -23,6 +23,7 @@ import { ensureWorktree, slugForIssue, type Worktree } from "./worktree.js";
 import { evidenceDir, evidenceInstruction, listEvidence, sweepWorktree } from "./evidence.js";
 import { announce } from "./announce.js";
 import { findingsFrom, parseCiFailure, renderCiFailure } from "./ci.js";
+import { shareEvidence } from "./share.js";
 
 const exec = promisify(execFile);
 
@@ -472,6 +473,15 @@ async function runFixInner(
   const prUrl = await openPullRequest(github, config, worktree, issue, fix, review, triageNotes, spent, artifactDir, listEvidence(evidence));
   info(`  ${green("PR open")} ${prUrl}`);
   await announce(loaded, opts.announceChannel, `✅ PR open for #${issue.number} — $${spent.toFixed(2)}. Waiting on you.\n${prUrl}`, opts.announceMessage);
+  // The screenshots are the argument for the change, and the pull request can
+  // only name a path that means nothing away from this machine.
+  await shareEvidence(
+    loaded,
+    opts.announceChannel,
+    opts.announceMessage,
+    artifactDir,
+    `📎 What changed, for #${issue.number}`,
+  );
   await github.removeLabels(issue.number, ["in-progress", config.github.labels.readyToFix]);
   await react(loaded, issue, "prReady");
   log(target, issue, `PR opened: ${prUrl}`, spent, artifactDir);

@@ -20,6 +20,7 @@ import { runPhase } from "./agent.js";
 import { ensureWorktree, isUntouched, removeWorktree, slugForIssue } from "./worktree.js";
 import { evidenceDir, evidenceInstruction, listEvidence, sweepWorktree } from "./evidence.js";
 import { announce } from "./announce.js";
+import { shareEvidence } from "./share.js";
 
 const VerdictSchema = z.object({
   evidenceKind: z

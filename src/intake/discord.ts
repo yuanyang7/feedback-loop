@@ -116,6 +116,40 @@ export class DiscordClient {
     }).catch(() => undefined); // an edit that fails must not take the run with it
   }
 
+  /**
+   * Post files. Discord hosts them, which is the point: a private repo's images
+   * need a logged-in session to load, so they will not render inline in a pull
+   * request, and the phone that gets the notification is where the evidence is
+   * most useful.
+   */
+  async sendFiles(
+    channelId: string,
+    content: string,
+    files: Array<{ name: string; bytes: Buffer }>,
+    replyToId?: string,
+  ): Promise<string | null> {
+    const form = new FormData();
+    form.append(
+      "payload_json",
+      JSON.stringify({
+        content: content.slice(0, 1900),
+        ...(replyToId ? { message_reference: { message_id: replyToId, fail_if_not_exists: false } } : {}),
+        attachments: files.map((f, i) => ({ id: i, filename: f.name })),
+      }),
+    );
+    files.forEach((f, i) => {
+      form.append(`files[${i}]`, new Blob([new Uint8Array(f.bytes)]), f.name);
+    });
+
+    const res = await fetch(`${API}/channels/${channelId}/messages`, {
+      method: "POST",
+      headers: { Authorization: `Bot ${this.token}` }, // no content-type: fetch sets the boundary
+      body: form,
+    });
+    if (!res.ok) return null;
+    return ((await res.json()) as { id?: string }).id ?? null;
+  }
+
   async addReaction(channelId: string, messageId: string, emoji: string): Promise<void> {
     await this.request<void>(
       `/channels/${channelId}/messages/${messageId}/reactions/${encodeURIComponent(emoji)}/@me`,

@@ -204,6 +204,19 @@ which is a product decision before it is an engineering one, and never a report 
 confidence floor — one too thin for a person to act on is not one an agent can reproduce. The
 default is `"never"`.
 
+### Seeing the evidence from a phone
+
+A run's screenshots land under `~/.feedback-loop`, which is reachable from the machine that made
+them and nowhere else — and the pull request can only name that path. Embedding them in the PR is
+not an option for a private repo either: an image link needs a logged-in session, so it will not
+render inline.
+
+So when a run opens a pull request, or when triage escalates, it posts the captures to the channel
+it was started from. Discord hosts them and is already open on the phone that got the notification.
+Before/after pairs are kept adjacent, since the comparison is the argument and a lone "after" says
+much less. Ten files or 8MB, whichever comes first; the rest stay on disk and the message says how
+many were left.
+
 ## Reactions
 
 One reaction per source message, so the channel shows where every report got to.
