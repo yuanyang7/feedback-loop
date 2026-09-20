@@ -13,7 +13,7 @@
 import { readSecret, type LoadedConfig } from "../core/config.js";
 import { bold, cyan, dim, info, warn } from "../core/log.js";
 import { GitHubClient } from "../intake/github.js";
-import { announce } from "./announce.js";
+import { announce, announcer } from "./announce.js";
 import { runFix } from "./fix.js";
 import { runTriage } from "./triage.js";
 
@@ -76,9 +76,15 @@ export async function runChain(
   }
 
   info(`${bold("2/2")} fix`);
-  await announce(loaded, opts.announceChannel,
-    `✅ #${issue.number} reproduced — starting the fix. Another ten minutes or so.`,
-    opts.announceMessage);
+  // update, not announce: `announce` is `finish`, and finish releases the run
+  // lock. Doing that here left the lock empty for the whole fix phase, so
+  // maxConcurrentRuns stopped holding and — worse, once clearStaleClaims
+  // existed — a live chain looked like a dead one, its `in-progress` was
+  // stripped, and the issue became eligible for a second run against the same
+  // worktree. The warning against exactly this is seventeen lines above.
+  await announcer(loaded, opts.announceChannel, opts.announceMessage)
+    .update(`✅ #${issue.number} reproduced — starting the fix. Another ten minutes or so.`)
+    .catch(() => undefined);
   await runFix(loaded, {
     issueNumber: issue.number,
     dryRun: false,

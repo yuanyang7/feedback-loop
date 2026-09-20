@@ -246,6 +246,15 @@ async function runFixInner(
   const gate = await checkGate(config, github);
   if (!gate.ok) {
     warn(`gate closed — ${gate.reason}`);
+    // The claim was made before this ran, so dropping it is this path's job.
+    // Left on, it says a run is in flight that was never allowed to start, and
+    // heldBack keeps the issue out of the queue forever — #1225 sat that way
+    // after the daily cap refused its fix phase one second after triage
+    // cleared it. clearStaleClaims would heal it a tick later; not making the
+    // mess is better than sweeping it up.
+    if (opts.issueNumber !== undefined) {
+      await github.removeLabels(opts.issueNumber, ["in-progress"]).catch(() => undefined);
+    }
     await announce(loaded, opts.announceChannel, `Can't start — ${gate.reason}`, opts.announceMessage);
     return null;
   }
