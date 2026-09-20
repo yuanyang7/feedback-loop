@@ -141,7 +141,7 @@ gate all still apply.
 
 ## How it decides
 
-Intake groups consecutive messages from one author into a single report, classifies each as
+Intake takes each message on its own — one message, one report — classifies it as
 bug / feature / question / noise, checks it against every open issue for duplicates, and files
 and files them. A report that clears the confidence floor is filed normally; one that does not is
 still filed, labelled `needs-info` and marked ❓, because dropping it would lose a real report

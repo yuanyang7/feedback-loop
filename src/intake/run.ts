@@ -69,7 +69,6 @@ export async function runIntake(loaded: LoadedConfig, opts: IntakeOptions): Prom
   const remaining = await handleCommands(loaded, discord, messages, opts.dryRun);
 
   const reports = groupMessages(remaining, {
-    windowSeconds: config.intake.groupWindowSeconds,
     ignoreAuthorIds: config.discord.ignoreAuthorIds,
     mentionTriggerIds: config.discord.mentionTriggerIds,
   });

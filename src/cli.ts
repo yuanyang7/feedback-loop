@@ -390,7 +390,6 @@ intake:
   model: claude-sonnet-5
   minConfidence: 0.7
   lookbackLimit: 100
-  groupWindowSeconds: 300
 
 worker:
   maxOpenPRs: 3                # the worker stops until you drain the queue

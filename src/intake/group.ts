@@ -9,42 +9,35 @@ export interface Report {
 }
 
 /**
- * Consecutive messages from one author inside `windowSeconds` are one report.
- * People split a bug across three lines; three issues would be wrong.
+ * One message, one report. No time-window grouping.
+ *
+ * Grouping consecutive messages from one author used to merge them, on the
+ * theory that a bug often gets split across a few lines. It also merged two
+ * unrelated reports sent a couple of minutes apart into a single issue that
+ * could not be closed until both halves were done — and time cannot tell those
+ * apart, since "one thing over three messages" and "three things in a row" look
+ * identical.
+ *
+ * So the rule is the predictable one. The cost is the case it was built for: a
+ * report split across lines now files an issue per line, and the duplicate check
+ * does not catch siblings classified in the same batch because none of them is
+ * an open issue yet.
  */
 export function groupMessages(
   messages: DiscordMessage[],
-  opts: { windowSeconds: number; ignoreAuthorIds: string[]; mentionTriggerIds: string[] },
+  opts: { ignoreAuthorIds: string[]; mentionTriggerIds: string[] },
 ): Report[] {
   const ignore = new Set(opts.ignoreAuthorIds);
   const triggers = new Set(opts.mentionTriggerIds);
-  const reports: Report[] = [];
 
-  for (const message of messages) {
-    if (ignore.has(message.author.id)) continue;
-    if (!hasContent(message)) continue;
-
-    const directed = (message.mentions ?? []).some((m) => triggers.has(m.id));
-    const last = reports.at(-1);
-    const withinWindow =
-      last !== undefined &&
-      last.authorId === message.author.id &&
-      Date.parse(message.timestamp) - Date.parse(last.messages.at(-1)!.timestamp) <=
-        opts.windowSeconds * 1000;
-
-    if (withinWindow) {
-      last.messages.push(message);
-      last.directed ||= directed;
-    } else {
-      reports.push({
-        messages: [message],
-        authorId: message.author.id,
-        authorName: message.author.username,
-        directed,
-      });
-    }
-  }
-  return reports;
+  return messages
+    .filter((message) => !ignore.has(message.author.id) && hasContent(message))
+    .map((message) => ({
+      messages: [message],
+      authorId: message.author.id,
+      authorName: message.author.username,
+      directed: (message.mentions ?? []).some((m) => triggers.has(m.id)),
+    }));
 }
 
 /**
