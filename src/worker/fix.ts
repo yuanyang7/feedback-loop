@@ -5,7 +5,7 @@
  * the whole point: the expensive, scarce resource this design protects is
  * review attention, not compute.
  */
-import { mkdirSync, existsSync } from "node:fs";
+import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
@@ -430,11 +430,14 @@ async function runFixInner(
     // The pre-push hook runs full local CI, so a rejection here is an ordinary
     // outcome of this loop, not an exception. Treat it like a review rejection:
     // feed what failed back into another attempt.
-    const push = await pushBranch(worktree);
+    const push = await pushBranch(worktree, artifactDir, attempt);
     if (!push) break;
 
     warn(`  push rejected by local CI${push.timeoutsOnly ? " (all timeouts)" : ""}`);
-    await github.commentOnIssue(issue.number, renderCiFailure(push, worktree.slug));
+    await github.commentOnIssue(
+      issue.number,
+      `${renderCiFailure(push, worktree.slug)}\n\nFull CI output: \`${artifactDir}/push-${attempt}.ci.log\``,
+    );
 
     ciRejections += 1;
     const ciFindings = findingsFrom(push);
@@ -540,7 +543,11 @@ async function openPullRequest(
  * Push, and return the CI failure if the hook rejected it. Never bypasses the
  * hook: a gate this tool can switch off is not a gate.
  */
-async function pushBranch(worktree: Worktree): Promise<ReturnType<typeof parseCiFailure>> {
+async function pushBranch(
+  worktree: Worktree,
+  artifactDir: string,
+  attempt: number,
+): Promise<ReturnType<typeof parseCiFailure>> {
   try {
     await exec("git", ["-C", worktree.path, "push", "-u", "origin", worktree.branch], {
       maxBuffer: 32 * 1024 * 1024,
@@ -548,7 +555,12 @@ async function pushBranch(worktree: Worktree): Promise<ReturnType<typeof parseCi
     return null;
   } catch (error) {
     const err = error as { stdout?: string; stderr?: string };
-    const parsed = parseCiFailure(`${err.stdout ?? ""}\n${err.stderr ?? ""}`);
+    const output = `${err.stdout ?? ""}\n${err.stderr ?? ""}`;
+    // The parsed summary is a reading of this; keep the thing it read, because
+    // a parser that does not recognise a runner reports a step and no tests,
+    // and then there is nothing left to look at.
+    writeFileSync(join(artifactDir, `push-${attempt}.ci.log`), output);
+    const parsed = parseCiFailure(output);
     if (parsed) return parsed;
     throw error; // a genuine git failure is still an exception
   }

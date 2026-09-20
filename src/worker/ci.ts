@@ -19,7 +19,11 @@ export interface CiFailure {
 }
 
 const STEP = /local CI failed: step failed \(exit \d+\): (.+)/;
-const FAIL_LINE = /FAIL\s+(?:\S+\s+)?(\S+\.test\.[cm]?[jt]sx?)\s*>\s*(.+)/g;
+// vitest: "FAIL  node  src/x.test.ts > suite > name"
+const VITEST_FAIL = /FAIL\s+(?:\S+\s+)?(\S+\.test\.[cm]?[jt]sx?)\s*>\s*(.+)/g;
+// jest: "FAIL src/x.test.tsx" on one line, then "  ● suite › name" for each
+const JEST_FILE = /^\s*FAIL\s+(\S+\.test\.[cm]?[jt]sx?)\s*$/gm;
+const JEST_CASE = /^\s*●\s+(?!Console)(.+?)\s*$/gm;
 
 /** Strip the ANSI a terminal-shaped hook writes even when nothing is a terminal. */
 function plain(text: string): string {
@@ -31,12 +35,24 @@ export function parseCiFailure(output: string): CiFailure | null {
   if (!/local CI failed/.test(text)) return null;
 
   const tests: string[] = [];
-  for (const match of text.matchAll(FAIL_LINE)) {
-    const entry = `${match[1]} > ${match[2]!.trim()}`;
+  const add = (entry: string): void => {
     if (!tests.includes(entry)) tests.push(entry);
+  };
+  for (const match of text.matchAll(VITEST_FAIL)) add(`${match[1]} > ${match[2]!.trim()}`);
+
+  // Jest prints the file and the cases separately, and "● Console" is a log
+  // heading rather than a failure — counting it would invent failing tests.
+  const jestFiles = [...text.matchAll(JEST_FILE)].map((m) => m[1]!);
+  if (jestFiles.length > 0) {
+    const cases = [...text.matchAll(JEST_CASE)].map((m) => m[1]!.trim());
+    if (cases.length > 0) for (const c of cases) add(c);
+    else for (const f of jestFiles) add(f);
   }
 
-  const timeouts = (text.match(/Test timed out in \d+ms/g) ?? []).length;
+  // Both runners, said differently: vitest "Test timed out in 5000ms", jest
+  // "Exceeded timeout of 5000 ms for a test". Missing one turns a loaded
+  // machine into findings, and sends the next attempt hunting a phantom.
+  const timeouts = (text.match(/Test timed out in \d+\s*ms|Exceeded timeout of \d+\s*ms/g) ?? []).length;
   return {
     step: STEP.exec(text)?.[1]?.trim() ?? null,
     tests,
