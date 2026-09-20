@@ -21,7 +21,7 @@ import { checkGate } from "./gate.js";
 import { runPhase } from "./agent.js";
 import { ensureWorktree, slugForIssue, type Worktree } from "./worktree.js";
 import { evidenceDir, evidenceInstruction, hasImages, listEvidence, sweepWorktree, touchesUi } from "./evidence.js";
-import { announce } from "./announce.js";
+import { announce, announcer } from "./announce.js";
 import { findingsFrom, parseCiFailure, renderCiFailure } from "./ci.js";
 import { shareEvidence } from "./share.js";
 
@@ -315,6 +315,23 @@ async function runFixInner(
   let repeats = 0;
   let spent = 0;
 
+  /**
+   * Live progress into the run's own message.
+   *
+   * `Announcer.update` has existed since this file did and nothing ever called
+   * it, so a run said "starting the fix, another ten minutes or so" and went
+   * silent — #1228 sat on that line for eighty minutes across two fix rounds
+   * and a rejected review, and the only way to learn where it was was to read
+   * the artifact directory. An edit costs one API call and adds no message to
+   * a channel that exists for bug reports.
+   */
+  const progress = announcer(loaded, opts.announceChannel, opts.announceMessage);
+  const step = async (what: string): Promise<void> => {
+    await progress
+      .update(`⏳ #${issue.number} — ${what}\n$${spent.toFixed(2)} so far · ${issue.url}`)
+      .catch(() => undefined); // never let a chat failure end a run
+  };
+
   // `attempt` counts every pass through this loop, including ones a rejected
   // push sent back round; maxFixAttempts is the backstop on that total. What
   // actually decides whether to give up is `repeats` — the same blocking
@@ -322,6 +339,12 @@ async function runFixInner(
   // and a round that clears one problem and uncovers another is not.
   for (let attempt = 1; attempt <= config.worker.maxFixAttempts; attempt += 1) {
     info(`  ${bold(`attempt ${attempt}/${config.worker.maxFixAttempts}`)}`);
+    await step(
+      attempt === 1
+        ? "writing the fix"
+        : `writing the fix, attempt ${attempt}/${config.worker.maxFixAttempts}` +
+          (findings.length > 0 ? ` — addressing: ${findings[0]!.slice(0, 80)}` : ""),
+    );
 
     const fixRun = await runPhase(
       `fix-${attempt}`,
@@ -406,6 +429,8 @@ async function runFixInner(
       return null;
     }
 
+    await step(`reviewing the fix${attempt > 1 ? ` (round ${attempt})` : ""} — a fresh session, adversarially`);
+
     const reviewRun = await runPhase(
       `review-${attempt}`,
       REVIEW_PROMPT(issue, fix, config.target.baseBranch, findings),
@@ -459,6 +484,10 @@ async function runFixInner(
     // The pre-push hook runs full local CI, so a rejection here is an ordinary
     // outcome of this loop, not an exception. Treat it like a review rejection:
     // feed what failed back into another attempt.
+    // The longest silent stretch of the whole run: the pre-push hook runs the
+    // full CI suite, several minutes with nothing else to show for it.
+    await step("review passed — pushing, which runs the full local CI suite");
+
     const push = await pushBranch(worktree, artifactDir, attempt);
     if (!push) break;
 
