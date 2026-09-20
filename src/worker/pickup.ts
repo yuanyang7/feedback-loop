@@ -11,6 +11,7 @@ import { bold, cyan, dim, info } from "../core/log.js";
 import { activeRuns, claimRun, startWorker } from "../intake/commands.js";
 import { GitHubClient, type Issue } from "../intake/github.js";
 import { checkGate } from "./gate.js";
+import { recordStatus } from "../core/tracker.js";
 
 export async function pickUpWork(loaded: LoadedConfig, dryRun: boolean): Promise<void> {
   const { config, repoPath } = loaded;
@@ -40,6 +41,7 @@ export async function pickUpWork(loaded: LoadedConfig, dryRun: boolean): Promise
 
   const channel = config.discord.channelId;
   const message = await postOpening(loaded, channel, next);
+  if (message) recordStatus(target, next.number, { botMessage: message, channel });
   const { pid } = startWorker(target, repoPath, { kind: "go", issue: next.number }, channel, message);
   claimRun(target, pid, `go #${next.number}`, next.number);
   info(`  ${bold(`picked up #${next.number}`)} ${cyan(next.title)} ${dim(`pid ${pid}`)}`);

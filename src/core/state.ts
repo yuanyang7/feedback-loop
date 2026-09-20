@@ -8,12 +8,6 @@ export interface IntakeState {
   lastTickAt: string | null;
   /** Cursors for command-only channels, keyed by channel id. */
   commandCursors?: Record<string, string>;
-  /**
-   * The last reaction reconcile set for each issue, keyed by issue number, and
-   * whether that issue was closed at the time. A closed issue's state cannot
-   * change again, so it never needs looking at twice.
-   */
-  reconciled?: Record<string, { state: string; final: boolean }>;
 }
 
 export interface RunLogEntry {

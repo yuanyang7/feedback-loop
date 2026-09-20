@@ -1,6 +1,7 @@
 import { readSecret, type LoadedConfig } from "../core/config.js";
 import { bold, dim, info } from "../core/log.js";
-import { appendRunLog, readIntakeState, writeIntakeState } from "../core/state.js";
+import { appendRunLog } from "../core/state.js";
+import { otherOwners, readStatus, recordStatus } from "../core/tracker.js";
 import { DiscordClient } from "./discord.js";
 import { setState, type State } from "./emoji.js";
 import { decodeFooter } from "./footer.js";
@@ -26,7 +27,6 @@ export async function runReconcile(loaded: LoadedConfig, opts: { dryRun: boolean
     ...(await github.listIssues({ labels: [config.github.labels.source], state: "closed", limit: 100 })),
   ];
 
-  const seen = { ...(readIntakeState(target).reconciled ?? {}) };
   let updated = 0;
   let skipped = 0;
 
@@ -34,22 +34,19 @@ export async function runReconcile(loaded: LoadedConfig, opts: { dryRun: boolean
     const link = decodeFooter(issue.body);
     if (!link || link.channel !== config.discord.channelId) continue;
 
-    // A closed issue we have already finalised is done forever. Skipping it
+    // A closed issue already announced as closed is done forever. Skipping it
     // before deriving anything is what keeps this from growing into dozens of
     // GitHub calls every tick as issues accumulate — and a rate limit here
     // fails silently, which is the worst way for it to fail.
-    const previous = seen[String(issue.number)];
-    if (previous?.final && issue.state === "CLOSED") {
+    const tracked = readStatus(target, issue.number);
+    const settled = tracked?.state === "merged" || tracked?.state === "dropped";
+    if (settled && issue.state === "CLOSED") {
       skipped += 1;
       continue;
     }
 
     const state = await deriveState(github, issue);
-    const final = issue.state === "CLOSED";
-
-    if (previous?.state === state) {
-      // Still worth recording that it is now final, but nothing to write out.
-      if (final) seen[String(issue.number)] = { state, final };
+    if (tracked?.state === state) {
       skipped += 1;
       continue;
     }
@@ -58,12 +55,31 @@ export async function runReconcile(loaded: LoadedConfig, opts: { dryRun: boolean
     info(`#${issue.number} ${dim(issue.title.slice(0, 60))} -> ${bold(state)}`);
     if (!opts.dryRun) {
       await setState(discord, link.channel, anchor, state);
-      seen[String(issue.number)] = { state, final };
+
+      // Anything the bot said about this issue is now out of date. A reaction
+      // is a symbol nobody misreads; a sentence saying "stopped, needs you"
+      // outlives the thing it described, and only a record of having posted it
+      // makes that fixable.
+      const text = announcement(config.target.repo, issue, state);
+      for (const message of tracked?.botMessages ?? []) {
+        // Leave a message that speaks for other issues too — rewriting it from
+        // this one's point of view deletes what it said about the others.
+        const shared = otherOwners(target, issue.number, message);
+        if (shared.length > 0) {
+          info(`  ${dim(`left a message alone — it also covers #${shared.join(", #")}`)}`);
+          continue;
+        }
+        await discord.editMessage(link.channel, message, text).catch(() => undefined);
+      }
+      recordStatus(target, issue.number, {
+        state,
+        channel: link.channel,
+        anchor,
+        title: issue.title,
+      });
     }
     updated += 1;
   }
-
-  if (!opts.dryRun) writeIntakeState(target, { reconciled: seen });
 
   if (!opts.dryRun) {
     appendRunLog({
@@ -75,6 +91,34 @@ export async function runReconcile(loaded: LoadedConfig, opts: { dryRun: boolean
     });
   }
   info(`${bold("done")} — ${updated} changed, ${skipped} unchanged.`);
+}
+
+/**
+ * What a bot message about this issue should say now. One sentence, because it
+ * replaces whatever was there — including a run's own report, which was true
+ * when written and is not any more.
+ */
+function announcement(repo: string, issue: Issue, state: State): string {
+  const link = `[#${issue.number}](https://github.com/${repo}/issues/${issue.number})`;
+  const title = issue.title.replace(/^\[feedback\]\s*/, "");
+  switch (state) {
+    case "merged":
+      return `✅ ${link} shipped — ${title}`;
+    case "prReady":
+      return `👀 ${link} has a pull request open and waiting on you — ${title}`;
+    case "needsDecision":
+      return `🤔 ${link} needs a decision from you — ${title}`;
+    case "working":
+      return `🔧 ${link} is being worked on — ${title}`;
+    case "unclear":
+      return `❓ ${link} is filed but too thin to act on — ${title}`;
+    case "dropped":
+      return `❌ ${link} was closed without a fix — ${title}`;
+    case "duplicate":
+      return `🔁 Already tracked as ${link} — ${title}`;
+    default:
+      return `📝 Filed as ${link} — ${title}`;
+  }
 }
 
 async function deriveState(github: GitHubClient, issue: Issue): Promise<State> {

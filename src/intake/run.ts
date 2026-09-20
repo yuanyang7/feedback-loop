@@ -2,6 +2,7 @@ import { readSecret, type LoadedConfig } from "../core/config.js";
 import { bold, cyan, dim, info, warn, yellow } from "../core/log.js";
 import { makeClassifier } from "../core/llm.js";
 import { appendRunLog, readIntakeState, writeIntakeState } from "../core/state.js";
+import { recordStatus } from "../core/tracker.js";
 import { classifyReports, type Decision } from "./classify.js";
 import { DiscordClient, messageUrl, type DiscordMessage } from "./discord.js";
 import { setState } from "./emoji.js";
@@ -140,6 +141,7 @@ export async function runIntake(loaded: LoadedConfig, opts: IntakeOptions): Prom
           await replyWithIssue(
             loaded, discord, anchor.id,
             `Already tracked — ${issueLink(config.target.repo, existing.number)} · ${existing.title}`,
+            existing.number,
           );
         }
         continue;
@@ -177,6 +179,12 @@ export async function runIntake(loaded: LoadedConfig, opts: IntakeOptions): Prom
     // Keep the question mark on a thin report: it is filed, but the reporter is
     // the only one who can make it actionable.
     await setState(discord, config.discord.channelId, anchor.id, lowConfidence ? "unclear" : "logged");
+    recordStatus(target, number, {
+      state: lowConfidence ? "unclear" : "logged",
+      channel: config.discord.channelId,
+      anchor: anchor.id,
+      title,
+    });
     await replyWithIssue(
       loaded, discord, anchor.id,
       lowConfidence
@@ -184,6 +192,7 @@ export async function runIntake(loaded: LoadedConfig, opts: IntakeOptions): Prom
         : autoReady(config.intake.autoAgentReady, decision, lowConfidence)
           ? `Filed as ${issueLink(config.target.repo, number)} · ${decision.title}\n\`severity:${decision.severity}\` — cleared for triage automatically. Reply \`triage ${number}\` to start one.`
           : `Filed as ${issueLink(config.target.repo, number)} · ${decision.title}`,
+      number,
     );
   }
 
@@ -281,6 +290,9 @@ async function handleCommands(
         : `⏳ \`${command.kind}\` on #${command.issue} — I'll update this message when it's done.`;
     const runMessage = dryRun ? null : await discord.sendMessage(channel, opening, message.id).catch(() => null);
 
+    // The run's message is the one that ages worst — it says "starting", then
+    // "stopped, needs you", and stays that way after the work ships.
+    if (runMessage) recordStatus(config.target.name, command.issue, { botMessage: runMessage, channel });
     const { pid, logPath } = startWorker(config.target.name, repoPath, command, channel, runMessage);
     claimRun(config.target.name, pid, `${command.kind} #${command.issue}`, command.issue);
     info(`  ${bold(`started ${command.kind} #${command.issue}`)} ${dim(`pid ${pid}`)}`);
@@ -390,11 +402,17 @@ async function replyWithIssue(
   discord: DiscordClient,
   messageId: string,
   text: string,
+  issue?: number,
 ): Promise<void> {
   if (!loaded.config.discord.replyWithIssue) return;
-  await discord
+  const sent = await discord
     .sendMessage(loaded.config.discord.channelId, text, messageId)
-    .catch(() => undefined); // a failed reply must not cost us the filed issue
+    .catch(() => null); // a failed reply must not cost us the filed issue
+  // Remembered so reconcile can rewrite it later. Without this the reply keeps
+  // saying "filed" long after the work shipped, and nothing knows it is there.
+  if (sent && issue !== undefined) {
+    recordStatus(loaded.config.target.name, issue, { botMessage: sent });
+  }
 }
 
 async function pollCommandChannels(
