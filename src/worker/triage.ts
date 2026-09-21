@@ -102,10 +102,18 @@ ${issue.body}
 </body>
 </issue>`;
 
+/** What triage concluded, in one line, for a caller that has to explain itself. */
+export interface TriageOutcome {
+  reproduced: boolean;
+  blockedReason: string;
+  /** The model's own words — the reason, as opposed to the label for it. */
+  why: string;
+}
+
 export async function runTriage(
   loaded: LoadedConfig,
   opts: { issueNumber?: number; dryRun: boolean; announceChannel?: string; announceMessage?: string },
-): Promise<void> {
+): Promise<TriageOutcome | null> {
   const { config, playbookPath } = loaded;
   // Fails here rather than three GitHub writes later: a host with no checkout
   // has no business having reached a triage run at all.
@@ -121,7 +129,7 @@ export async function runTriage(
   if (!gate.ok) {
     warn(`gate closed — ${gate.reason}`);
     await announce(loaded, opts.announceChannel, `Can't start — ${gate.reason}`, opts.announceMessage);
-    return;
+    return null;
   }
 
   const issue = await pickIssue(github, config.github.labels.agentReady, opts.issueNumber);
@@ -137,21 +145,21 @@ export async function runTriage(
     if (opts.issueNumber === undefined) {
       info(`Nothing labelled ${cyan(config.github.labels.agentReady)} to triage.`);
     }
-    return;
+    return null;
   }
   info(`${bold(`#${issue.number}`)} ${issue.title}`);
 
   if (!playbookPath) {
     warn("No .feedback-loop/playbook.md — refusing to run an agent in this repo without one.");
     await announce(loaded, opts.announceChannel, "Can't start — this repo has no `.feedback-loop/playbook.md`.", opts.announceMessage);
-    return;
+    return null;
   }
   const playbook = readFileSync(playbookPath, "utf8");
 
   if (opts.dryRun) {
     console.log(`\n${dim("[dry-run] would triage in a fresh worktree with this prompt:")}\n`);
     console.log(PROMPT(issue, config.worker.denyPaths, "<run artifact dir>/evidence"));
-    return;
+    return null;
   }
 
   const slug = slugForIssue(issue.number, issue.title);
@@ -214,7 +222,8 @@ export async function runTriage(
   const safeToFix = verdict?.reproduced === true && grounded && verdict.blockedReason === "none";
   const done = safeToFix
     ? `✅ Triage done on #${issue.number} — **reproduced** (size \`${verdict!.size}\`). Ready for \`fix ${issue.number}\`.\n${issue.url}`
-    : `🤔 Triage done on #${issue.number} — **${verdict?.blockedReason ?? "did not complete"}**. Needs you.\n${issue.url}`;
+    : `🤔 Triage done on #${issue.number} — **${verdict?.blockedReason ?? "did not complete"}**. Needs you.` +
+      `${firstSentence(verdict?.reasoning)}\n${issue.url}`;
   await announce(loaded, opts.announceChannel, done, opts.announceMessage);
   // Attached to the same message, not posted after it — #1215 captured no
   // screenshots at all and its logs were the entire argument, and they never
@@ -258,6 +267,21 @@ export async function runTriage(
       artifactDir,
     },
   });
+
+  return {
+    reproduced: safeToFix,
+    blockedReason: verdict?.blockedReason ?? "did not complete",
+    why: (verdict?.reasoning ?? "").trim(),
+  };
+}
+
+/** One sentence of the model's reasoning, for a chat line that must stay short. */
+function firstSentence(text: string | undefined): string {
+  const trimmed = (text ?? "").trim();
+  if (!trimmed) return "";
+  const end = trimmed.search(/(?<=[.!?])\s/);
+  const sentence = end === -1 ? trimmed : trimmed.slice(0, end);
+  return `\n> ${sentence.length > 240 ? `${sentence.slice(0, 237)}…` : sentence}`;
 }
 
 async function pickIssue(

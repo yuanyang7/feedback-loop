@@ -59,7 +59,9 @@ export async function runChain(
   info(`${bold("1/2")} triage`);
   // Triage reports through the chain's own message rather than finishing it —
   // the run is not over, and a "done" here would release the lock mid-chain.
-  await runTriage(loaded, { issueNumber: issue.number, dryRun: opts.dryRun, announceChannel: undefined });
+  const triaged = await runTriage(loaded, {
+    issueNumber: issue.number, dryRun: opts.dryRun, announceChannel: undefined,
+  });
   if (opts.dryRun) return;
 
   // Triage marks ready-to-fix only when it actually reproduced the problem and
@@ -69,8 +71,11 @@ export async function runChain(
   const reproduced = after?.labels.some((l) => l.name === labels.readyToFix) ?? false;
   if (!reproduced) {
     info(`  ${dim("triage did not clear it for a fix — stopping here")}`);
+    // Say why here. "Needs you" without a reason means opening the issue to
+    // find out whether it wants thirty seconds or an afternoon, every time.
+    const why = triaged?.why ? `\n> ${triaged.why.split(/(?<=[.!?])\s/)[0]!.slice(0, 240)}` : "";
     await announce(loaded, opts.announceChannel,
-      `🤔 #${issue.number}: triage stopped short of a fix. It's on the issue, and needs you.\n${issue.url}`,
+      `🤔 #${issue.number}: triage stopped short of a fix — **${triaged?.blockedReason ?? "did not complete"}**.${why}\n${issue.url}`,
     opts.announceMessage);
     return;
   }

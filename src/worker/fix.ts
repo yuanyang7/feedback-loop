@@ -428,6 +428,7 @@ async function runFixInner(
         github, loaded, issue,
         blockedComment(fix) + (await preserveWork(config, worktree)),
         opts.announceChannel, opts.announceMessage,
+        `Blocked — ${fix.blockedReason}. ${fix.summary}`,
       );
       log(target, issue, `blocked: ${fix.blockedReason}`, spent, artifactDir);
       return null;
@@ -487,6 +488,9 @@ async function runFixInner(
             branch,
           opts.announceChannel,
           opts.announceMessage,
+          stuck
+            ? `Review raised the same finding ${repeats}× — ${findings[0] ?? "see the issue"}`
+            : `Still rejected after ${attempt} attempts — ${findings[0] ?? "see the issue"}`,
         );
         log(target, issue, "review rejected", spent, artifactDir);
         return null;
@@ -755,8 +759,11 @@ async function escalate(
   comment: string,
   announceChannel?: string,
   announceMessage?: string,
+  /** One line on what the agent concluded. Without it the chat line says only that it stopped. */
+  why?: string,
 ): Promise<void> {
-  await announce(loaded, announceChannel, `🤔 Stopped on #${issue.number}. Needs you.\n${issue.url}`, announceMessage);
+  const reason = why?.trim() ? `\n> ${why.trim().split(/(?<=[.!?])\s/)[0]!.slice(0, 240)}` : "";
+  await announce(loaded, announceChannel, `🤔 Stopped on #${issue.number}. Needs you.${reason}\n${issue.url}`, announceMessage);
   await github.commentOnIssue(issue.number, comment);
   await github.addLabels(issue.number, [loaded.config.github.labels.needsDecision]);
   await github.removeLabels(issue.number, ["in-progress", loaded.config.github.labels.readyToFix]);
