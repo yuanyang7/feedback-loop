@@ -34,17 +34,15 @@ export async function runReconcile(loaded: LoadedConfig, opts: { dryRun: boolean
     const link = decodeFooter(issue.body);
     if (!link || link.channel !== config.discord.channelId) continue;
 
-    // A closed issue already announced as closed is done forever. Skipping it
-    // before deriving anything is what keeps this from growing into dozens of
-    // GitHub calls every tick as issues accumulate — and a rate limit here
-    // fails silently, which is the worst way for it to fail.
+    // This used to skip any closed issue already announced as closed, to avoid
+    // growing into dozens of GitHub calls a tick. It saved none: deriveState
+    // returns on its first line for a closed issue and only queries a pull
+    // request for an open one. What it did do was make a terminal state
+    // permanent — so when deriveState called #1238 "merged" by reading its
+    // stateReason in the wrong case, no later pass could ever correct it, not
+    // even after the bug was fixed. The comparison below skips it just as
+    // cheaply, and only when the state actually agrees.
     const tracked = readStatus(target, issue.number);
-    const settled = tracked?.state === "merged" || tracked?.state === "dropped";
-    if (settled && issue.state === "CLOSED") {
-      skipped += 1;
-      continue;
-    }
-
     const state = await deriveState(github, issue);
     if (tracked?.state === state) {
       skipped += 1;
