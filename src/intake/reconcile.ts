@@ -129,8 +129,12 @@ async function deriveState(github: GitHubClient, issue: Issue): Promise<State> {
   const labels = new Set(issue.labels.map((l) => l.name));
 
   if (issue.state === "CLOSED") {
-    // "not planned" is a decision not to fix; anything else closed we treat as shipped.
-    return issue.stateReason === "not_planned" ? "dropped" : "merged";
+    // Case matters here and nowhere else in this file: `gh --json` answers from
+    // GraphQL, so this arrives as NOT_PLANNED, not not_planned. Comparing it in
+    // lower case never matched, and the fallback is "merged" — so every issue
+    // closed as not planned was announced as shipped. #1238 was closed as a
+    // mis-filed duplicate and the channel was told it had shipped.
+    return issue.stateReason?.toLowerCase() === "not_planned" ? "dropped" : "merged";
   }
   // Before needs-decision: a run that fell over may still carry a stale
   // decision label from an earlier pass, and "it crashed" is the more useful
