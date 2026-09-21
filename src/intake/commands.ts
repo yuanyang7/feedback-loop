@@ -121,6 +121,26 @@ export function claimRun(target: string, pid: number, what: string, issue: numbe
   writeFileSync(lockPath(target), JSON.stringify([...live, { pid, what, at: new Date().toISOString(), issue }]));
 }
 
+/**
+ * Claim the lock for *this* process, if nothing already has.
+ *
+ * The lock is normally taken by whoever spawns a run, on the child's behalf,
+ * and released by the child when it finishes. A run started straight from a
+ * terminal — `feedback-loop go . --issue N`, which is what `queue` tells you
+ * to type — has no such parent, so nothing claimed it and `activeRuns` showed
+ * an idle machine while a fix was underway. Two things then go wrong: a tick
+ * can start a second run on the same issue, which fights the first over one
+ * worktree, and the stale-claim sweep strips `in-progress` off a live run.
+ *
+ * Idempotent, so the spawned case — where the parent already recorded this
+ * pid — stays a single entry, and a `go` that runs triage then fix claims
+ * once rather than twice.
+ */
+export function claimSelf(target: string, what: string, issue: number): void {
+  if (activeRuns(target).some((lock) => lock.pid === process.pid)) return;
+  claimRun(target, process.pid, what, issue);
+}
+
 export function releaseRun(target: string, pid = process.pid): void {
   const remaining = activeRuns(target).filter((lock) => lock.pid !== pid);
   writeFileSync(lockPath(target), JSON.stringify(remaining));

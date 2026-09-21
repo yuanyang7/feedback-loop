@@ -11,6 +11,7 @@ import test from "node:test";
 
 process.env.FEEDBACK_LOOP_HOME = mkdtempSync(join(tmpdir(), "fl-claims-"));
 const { clearStaleClaims } = await import("./pickup.js");
+const { claimSelf, activeRuns } = await import("../intake/commands.js");
 import type { Config } from "../core/config.js";
 import type { GitHubClient } from "../intake/github.js";
 
@@ -60,4 +61,25 @@ test("dry-run clears nothing", async () => {
   const { gh, cleared } = stub([1225]);
   await clearStaleClaims(gh, config, "dry", true);
   deepStrictEqual(cleared, []);
+});
+
+test("a run started from a terminal is visible, and survives the sweep", async () => {
+  // `feedback-loop go . --issue N` has no parent to claim the lock on its
+  // behalf. Unclaimed, it looked idle: the sweep below would have stripped
+  // `in-progress` off a live run, and a tick could then start a second run on
+  // the same issue and fight it over one worktree.
+  claimSelf("manual", "go #1225", 1225);
+  deepStrictEqual(activeRuns("manual").map((r) => r.issue), [1225]);
+
+  const { gh, cleared } = stub([1225]);
+  await clearStaleClaims(gh, config, "manual", false);
+  deepStrictEqual(cleared, []);
+});
+
+test("claiming twice in one process is still one run", async () => {
+  // `go` runs triage and then fix, and each claims. Two entries would read as
+  // two concurrent runs and trip the concurrency limit against itself.
+  claimSelf("chain", "triage #1210", 1210);
+  claimSelf("chain", "fix #1210", 1210);
+  deepStrictEqual(activeRuns("chain").length, 1);
 });

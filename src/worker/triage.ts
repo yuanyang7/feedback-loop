@@ -8,6 +8,7 @@
 import { mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { z } from "zod";
+import { claimSelf } from "../intake/commands.js";
 import { readSecret, type LoadedConfig, requireRepo } from "../core/config.js";
 import { bold, cyan, dim, green, info, warn, yellow } from "../core/log.js";
 import { appendRunLog, runsDir } from "../core/state.js";
@@ -160,6 +161,10 @@ export async function runTriage(
   const evidence = evidenceDir(artifactDir);
   const worktree = await ensureWorktree(repoPath, config.target.baseBranch, slug, "fix");
   info(`  worktree ${dim(worktree.path)}`);
+  // Claim the lock before the label, so the two never disagree. A run
+  // started from a terminal has no parent to have claimed it, and an
+  // unclaimed run looks idle to everything that checks.
+  claimSelf(target, "triage #" + issue.number, issue.number);
   await github.addLabels(issue.number, ["in-progress"]);
   await react(loaded, issue, "working");
 

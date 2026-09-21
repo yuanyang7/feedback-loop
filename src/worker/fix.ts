@@ -10,6 +10,7 @@ import { join } from "node:path";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { z } from "zod";
+import { claimSelf } from "../intake/commands.js";
 import { readSecret, type LoadedConfig, requireRepo } from "../core/config.js";
 import { bold, cyan, dim, green, info, red, warn, yellow } from "../core/log.js";
 import { appendRunLog, runsDir } from "../core/state.js";
@@ -299,6 +300,10 @@ async function runFixInner(
   if (!existsSync(join(worktree.path, "node_modules"))) {
     warn("  worktree has no node_modules — triage's setup is gone; the fix session will have to redo it");
   }
+  // Claim the lock before the label, so the two never disagree. A run
+  // started from a terminal has no parent to have claimed it, and an
+  // unclaimed run looks idle to everything that checks.
+  claimSelf(target, "fix #" + issue.number, issue.number);
   await github.addLabels(issue.number, ["in-progress"]);
   onClaim(issue);
   await react(loaded, issue, "working");
