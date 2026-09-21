@@ -13,7 +13,7 @@
 import { readSecret, type LoadedConfig } from "../core/config.js";
 import { bold, cyan, dim, info, warn } from "../core/log.js";
 import { GitHubClient } from "../intake/github.js";
-import { announce, announcer } from "./announce.js";
+import { announce, announcer, firstSentence } from "./announce.js";
 import { runFix } from "./fix.js";
 import { runTriage } from "./triage.js";
 
@@ -73,7 +73,8 @@ export async function runChain(
     info(`  ${dim("triage did not clear it for a fix — stopping here")}`);
     // Say why here. "Needs you" without a reason means opening the issue to
     // find out whether it wants thirty seconds or an afternoon, every time.
-    const why = triaged?.why ? `\n> ${triaged.why.split(/(?<=[.!?])\s/)[0]!.slice(0, 240)}` : "";
+    const sentence = firstSentence(triaged?.why);
+    const why = sentence ? `\n> ${sentence}` : "";
     await announce(loaded, opts.announceChannel,
       `🤔 #${issue.number}: triage stopped short of a fix — **${triaged?.blockedReason ?? "did not complete"}**.${why}\n${issue.url}`,
     opts.announceMessage);

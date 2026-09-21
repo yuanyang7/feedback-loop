@@ -21,7 +21,7 @@ import { runPhase } from "./agent.js";
 import { ensureWorktree, isUntouched, removeWorktree, slugForIssue } from "./worktree.js";
 import { attachmentInstruction, savedAttachments } from "../intake/attachments.js";
 import { evidenceDir, evidenceInstruction, listEvidence, sweepWorktree } from "./evidence.js";
-import { announce } from "./announce.js";
+import { announce, firstSentence } from "./announce.js";
 import { shareEvidence } from "./share.js";
 
 const VerdictSchema = z.object({
@@ -224,10 +224,11 @@ export async function runTriage(
     warn(`  claimed a reproduction on ${verdict.evidenceKind} evidence — treating it as not reproduced`);
   }
   const safeToFix = verdict?.reproduced === true && grounded && verdict.blockedReason === "none";
+  const quote = (t: string | undefined): string => (firstSentence(t) ? `\n> ${firstSentence(t)}` : "");
   const done = safeToFix
     ? `✅ Triage done on #${issue.number} — **reproduced** (size \`${verdict!.size}\`). Ready for \`fix ${issue.number}\`.\n${issue.url}`
     : `🤔 Triage done on #${issue.number} — **${verdict?.blockedReason ?? "did not complete"}**. Needs you.` +
-      `${firstSentence(verdict?.reasoning)}\n${issue.url}`;
+      `${quote(verdict?.reasoning)}\n${issue.url}`;
   await announce(loaded, opts.announceChannel, done, opts.announceMessage);
   // Attached to the same message, not posted after it — #1215 captured no
   // screenshots at all and its logs were the entire argument, and they never
@@ -277,15 +278,6 @@ export async function runTriage(
     blockedReason: verdict?.blockedReason ?? "did not complete",
     why: (verdict?.reasoning ?? "").trim(),
   };
-}
-
-/** One sentence of the model's reasoning, for a chat line that must stay short. */
-function firstSentence(text: string | undefined): string {
-  const trimmed = (text ?? "").trim();
-  if (!trimmed) return "";
-  const end = trimmed.search(/(?<=[.!?])\s/);
-  const sentence = end === -1 ? trimmed : trimmed.slice(0, end);
-  return `\n> ${sentence.length > 240 ? `${sentence.slice(0, 237)}…` : sentence}`;
 }
 
 async function pickIssue(

@@ -23,7 +23,7 @@ import { runPhase } from "./agent.js";
 import { ensureWorktree, slugForIssue, type Worktree } from "./worktree.js";
 import { attachmentInstruction, savedAttachments } from "../intake/attachments.js";
 import { evidenceDir, evidenceInstruction, hasImages, listEvidence, sweepWorktree, touchesUi } from "./evidence.js";
-import { announce, announcer } from "./announce.js";
+import { announce, announcer, firstSentence } from "./announce.js";
 import { findingsFrom, parseCiFailure, renderCiFailure } from "./ci.js";
 import { shareEvidence } from "./share.js";
 
@@ -765,7 +765,8 @@ async function escalate(
   /** One line on what the agent concluded. Without it the chat line says only that it stopped. */
   why?: string,
 ): Promise<void> {
-  const reason = why?.trim() ? `\n> ${why.trim().split(/(?<=[.!?])\s/)[0]!.slice(0, 240)}` : "";
+  const sentence = firstSentence(why);
+  const reason = sentence ? `\n> ${sentence}` : "";
   await announce(loaded, announceChannel, `🤔 Stopped on #${issue.number}. Needs you.${reason}\n${issue.url}`, announceMessage);
   await github.commentOnIssue(issue.number, comment);
   await github.addLabels(issue.number, [loaded.config.github.labels.needsDecision]);

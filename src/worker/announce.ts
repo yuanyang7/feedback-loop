@@ -50,3 +50,21 @@ export async function announce(
 ): Promise<void> {
   await announcer(loaded, channelId, messageId).finish(text);
 }
+
+/**
+ * One sentence of an agent's reasoning, for a chat line that has to stay short.
+ *
+ * Breaks on a word so a truncated line reads as truncated rather than as a
+ * typo — the first version of this cut "onto its launch card" to "onto its l"
+ * and the reader's question became what the message meant, not what it said.
+ */
+export function firstSentence(text: string | undefined, limit = 240): string {
+  const trimmed = (text ?? "").trim();
+  if (!trimmed) return "";
+  const end = trimmed.search(/(?<=[.!?])\s/);
+  const sentence = end === -1 ? trimmed : trimmed.slice(0, end);
+  if (sentence.length <= limit) return sentence;
+  const cut = sentence.slice(0, limit);
+  const lastSpace = cut.lastIndexOf(" ");
+  return `${(lastSpace > limit * 0.6 ? cut.slice(0, lastSpace) : cut).replace(/[,;:]$/, "")}…`;
+}
