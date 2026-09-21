@@ -28,11 +28,25 @@ const DecisionSchema = z.object({
     ),
   severity: z.enum(["low", "medium", "high"]),
   sizeHint: z.enum(["s", "m", "l"]).describe("Rough guess only — you cannot see the code."),
+  clarifies: z
+    .number()
+    .int()
+    .nullable()
+    .describe(
+      "Existing issue number this message ADDS DETAIL TO, or null. Use this when the reporter is " +
+        "answering a question or filling in what was missing rather than raising something new: it " +
+        "becomes a comment on that issue, not a second issue and not a duplicate. Where a report is " +
+        "marked below as replying to an issue, that number is a fact rather than a guess — prefer it " +
+        "unless the message plainly raises a different problem.",
+    ),
   duplicateOf: z
     .number()
     .int()
     .nullable()
-    .describe("Existing issue number describing the SAME defect on the SAME surface, or null."),
+    .describe(
+      "Existing issue number describing the SAME defect on the SAME surface, already reported by " +
+        "someone else, or null. Not for a reporter adding to their own report — that is `clarifies`.",
+    ),
   duplicateConfidence: z
     .number()
     .min(0)
@@ -104,7 +118,12 @@ export async function classifyReports(
       : "(none)";
 
   const reportBlock = reports
-    .map((r, i) => `<report index="${i}" author="${r.authorName}">\n${renderReport(r)}\n</report>`)
+    .map((r, i) => {
+      // An attribute, not a sentence in the body: the body is the reporter's
+      // words, and this is something we looked up.
+      const replying = r.repliesToIssue !== undefined ? ` replying-to-issue="${r.repliesToIssue}"` : "";
+      return `<report index="${i}" author="${r.authorName}"${replying}>\n${renderReport(r)}\n</report>`;
+    })
     .join("\n\n");
 
   const { value, costUsd } = await classifier.complete(
@@ -130,6 +149,7 @@ export async function classifyReports(
           body: "",
           severity: "low" as const,
           sizeHint: "s" as const,
+          clarifies: null,
           duplicateOf: null,
           duplicateConfidence: 0,
           reasoning: "No decision returned for this report.",

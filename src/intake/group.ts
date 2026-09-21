@@ -6,6 +6,12 @@ export interface Report {
   authorName: string;
   /** True when the message explicitly addressed the bot — skips the confidence floor. */
   directed: boolean;
+  /**
+   * The issue this message is a reply to, resolved from the tracker rather than
+   * inferred from the quoted text. Filled in by intake, which is what can see
+   * the tracker; grouping itself knows nothing about issues.
+   */
+  repliesToIssue?: number;
 }
 
 /**

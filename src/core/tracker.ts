@@ -98,6 +98,24 @@ export function recordStatus(
 }
 
 /**
+ * The issue a message belongs to, whether we posted it or it is the report the
+ * issue was filed from.
+ *
+ * Intake needs this to read a reply. When someone answers the bot's "could you
+ * add specifics?", the message they are replying to names the issue exactly —
+ * and until this existed that fact reached the classifier only as quoted prose
+ * for it to guess from. It guessed wrong on #1238, correctly describing the
+ * message as "additional detail for the already-filed issue #1237" and filing
+ * it as a separate issue in the same breath.
+ */
+export function issueForMessage(target: string, message: string): number | null {
+  for (const status of Object.values(readStatuses(target))) {
+    if (status.botMessages.includes(message) || status.anchor === message) return status.issue;
+  }
+  return null;
+}
+
+/**
  * Issues other than this one that also point at a given bot message. A message
  * covering several issues must not be rewritten from the perspective of one of
  * them — doing that once turned "filed as two issues, #1220 and #1221" into a

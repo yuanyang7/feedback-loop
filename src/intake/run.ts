@@ -2,7 +2,7 @@ import { readSecret, requireRepo, type LoadedConfig } from "../core/config.js";
 import { bold, cyan, dim, info, warn, yellow } from "../core/log.js";
 import { makeClassifier } from "../core/llm.js";
 import { appendRunLog, readIntakeState, writeIntakeState } from "../core/state.js";
-import { recordStatus } from "../core/tracker.js";
+import { issueForMessage, recordStatus } from "../core/tracker.js";
 import { classifyReports, type Decision } from "./classify.js";
 import { DiscordClient, messageUrl, type DiscordMessage } from "./discord.js";
 import { setState } from "./emoji.js";
@@ -75,10 +75,10 @@ export async function runIntake(loaded: LoadedConfig, opts: IntakeOptions): Prom
   // both wrong and expensive.
   const remaining = await handleCommands(loaded, discord, messages, opts.dryRun, undefined, true, opts.role ?? "all");
 
-  const reports = groupMessages(remaining, {
+  const reports = attachReplyLinks(target, groupMessages(remaining, {
     ignoreAuthorIds: config.discord.ignoreAuthorIds,
     mentionTriggerIds: config.discord.mentionTriggerIds,
-  });
+  }));
   info(`${messages.length} new message(s) -> ${reports.length} candidate report(s).`);
   if (reports.length === 0) {
     if (!opts.dryRun) {
@@ -108,6 +108,32 @@ export async function runIntake(loaded: LoadedConfig, opts: IntakeOptions): Prom
     if (decision.kind === "noise" || decision.kind === "question") {
       skipped += 1;
       info(`${label} ${dim("skipped —")} ${dim(decision.reasoning)}`);
+      continue;
+    }
+
+    // Someone answering "could you add specifics?" is not filing a second bug.
+    // Before this existed the only outcomes were a new issue or a duplicate,
+    // and neither fits: #1238 was filed as its own issue by a classifier whose
+    // own body text called it "additional detail for the already-filed #1237",
+    // and marking it duplicate would have closed away the detail it carried.
+    if (decision.clarifies !== null) {
+      info(`${label} ${cyan(`adds detail to #${decision.clarifies}`)}`);
+      if (!opts.dryRun) {
+        await github
+          .commentOnIssue(
+            decision.clarifies,
+            `### 💬 More from the reporter\n\n${decision.body}\n\n` +
+              `<sub>[Said in chat](${link}) by \`${report.authorName}\`, added here by ` +
+              `[feedback-loop](https://github.com/yuanyang7/feedback-loop). Still a report, not a diagnosis.</sub>`,
+          )
+          .catch((error: Error) => warn(`could not comment on #${decision.clarifies}: ${error.message}`));
+        // The gap it was filing is now filled, so the label that named the gap
+        // should go — leaving it would keep the issue out of every queue on the
+        // strength of a question that has been answered.
+        await github.removeLabels(decision.clarifies, [config.github.labels.needsInfo]).catch(() => undefined);
+        await setState(discord, config.discord.channelId, anchor.id, "logged").catch(() => undefined);
+        recordStatus(target, decision.clarifies, { channel: config.discord.channelId });
+      }
       continue;
     }
 
@@ -389,6 +415,24 @@ async function openGate(loaded: LoadedConfig, issue: number, dryRun: boolean): P
 
   await github.addLabels(issue, [config.github.labels.agentReady]);
   return `#${issue} cleared for triage. Reply \`triage ${issue}\` to start one.\n${found.title}`;
+}
+
+/**
+ * Mark each report that answers a message we posted about an issue.
+ *
+ * The reply is the reporter telling us which issue they mean, precisely, and
+ * the tracker can resolve it — so the classifier is handed the number rather
+ * than left to infer it from a truncated quote.
+ */
+function attachReplyLinks(target: string, reports: Report[]): Report[] {
+  return reports.map((report) => {
+    for (const message of report.messages) {
+      const parent = message.referenced_message?.id;
+      const issue = parent ? issueForMessage(target, parent) : null;
+      if (issue !== null) return { ...report, repliesToIssue: issue };
+    }
+    return report;
+  });
 }
 
 async function gateRefusal(
