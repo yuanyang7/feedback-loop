@@ -559,7 +559,13 @@ async function runFixInner(
   // name a path that means nothing away from this machine. Attached to the run's
   // own message rather than posted after it, so this still costs one line.
   await shareEvidence(loaded, opts.announceChannel, opts.announceMessage, artifactDir, done);
-  await github.removeLabels(issue.number, ["in-progress", config.github.labels.readyToFix]);
+  // agent-ready comes off too. The issue stays open until the PR merges, and
+  // while it was open it still read as high-severity work nobody had started —
+  // so auto picked #1225 up again sixteen minutes after its own PR went up,
+  // and would have kept doing that every tick until a human merged it.
+  await github.removeLabels(issue.number, [
+    "in-progress", config.github.labels.readyToFix, config.github.labels.agentReady,
+  ]);
   await react(loaded, issue, "prReady");
   log(target, issue, `PR opened: ${prUrl}`, spent, artifactDir);
   return null;

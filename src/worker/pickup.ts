@@ -106,6 +106,16 @@ export async function pickUpWork(
   const next = await nextIssue(github, config.github.labels.agentReady, config.worker.auto);
   if (!next) return;
 
+  // One query, on the chosen candidate only. A run removes agent-ready when it
+  // opens a PR, so this should never fire — but the label can be re-applied by
+  // hand, and redoing finished work is expensive enough to be worth a check
+  // rather than a comment saying it cannot happen.
+  const existing = await github.linkedPullRequest(next.number).catch(() => null);
+  if (existing?.state === "OPEN") {
+    info(`  ${dim(`not picking up #${next.number} — PR #${existing.number} is already open on it`)}`);
+    return;
+  }
+
   if (dryRun) {
     info(`  ${dim(`[dry-run] would pick up #${next.number} — ${next.title}`)}`);
     return;
