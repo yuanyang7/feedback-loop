@@ -21,6 +21,7 @@ import { GitHubClient, type Issue } from "../intake/github.js";
 import { checkGate } from "./gate.js";
 import { runPhase } from "./agent.js";
 import { ensureWorktree, slugForIssue, type Worktree } from "./worktree.js";
+import { attachmentInstruction, savedAttachments } from "../intake/attachments.js";
 import { evidenceDir, evidenceInstruction, hasImages, listEvidence, sweepWorktree, touchesUi } from "./evidence.js";
 import { announce, announcer } from "./announce.js";
 import { findingsFrom, parseCiFailure, renderCiFailure } from "./ci.js";
@@ -82,6 +83,7 @@ const FIX_PROMPT = (
   previousFindings: string[],
   evidencePath: string,
   previous: Fix | null,
+  attachments: string[] = [],
 ) => {
   const retry =
     previousFindings.length === 0
@@ -121,6 +123,7 @@ Stop and set blockedReason instead of continuing if a fix would touch any of:
 ${denyPaths.map((p) => `  - ${p}`).join("\n")}
 
 ${evidenceInstruction(evidencePath)}
+${attachmentInstruction(attachments)}
 
 Capture the same interaction twice where you can — before your change and after — so a reviewer can
 see the difference rather than take your word for it.
@@ -287,7 +290,7 @@ async function runFixInner(
 
   if (opts.dryRun) {
     console.log(`\n${dim("[dry-run] would run the fix phase with this prompt:")}\n`);
-    console.log(FIX_PROMPT(issue, triageNotes, config.worker.denyPaths, [], "<run artifact dir>/evidence", null));
+    console.log(FIX_PROMPT(issue, triageNotes, config.worker.denyPaths, [], "<run artifact dir>/evidence", null, savedAttachments(target, issue.number)));
     return null;
   }
 
@@ -362,7 +365,7 @@ async function runFixInner(
 
     const fixRun = await runPhase(
       `fix-${attempt}`,
-      FIX_PROMPT(issue, triageNotes, config.worker.denyPaths, findings, evidence, previousFix),
+      FIX_PROMPT(issue, triageNotes, config.worker.denyPaths, findings, evidence, previousFix, savedAttachments(target, issue.number)),
       FixSchema,
       {
         ...phaseOpts,

@@ -19,6 +19,7 @@ import { GitHubClient, type Issue } from "../intake/github.js";
 import { checkGate } from "./gate.js";
 import { runPhase } from "./agent.js";
 import { ensureWorktree, isUntouched, removeWorktree, slugForIssue } from "./worktree.js";
+import { attachmentInstruction, savedAttachments } from "../intake/attachments.js";
 import { evidenceDir, evidenceInstruction, listEvidence, sweepWorktree } from "./evidence.js";
 import { announce } from "./announce.js";
 import { shareEvidence } from "./share.js";
@@ -65,7 +66,7 @@ const VerdictSchema = z.object({
 
 type Verdict = z.infer<typeof VerdictSchema>;
 
-const PROMPT = (issue: Issue, denyPaths: string[], evidencePath: string) => `You are triaging a bug report. You will NOT fix anything in this session.
+const PROMPT = (issue: Issue, denyPaths: string[], evidencePath: string, attachments: string[] = []) => `You are triaging a bug report. You will NOT fix anything in this session.
 
 Your job has exactly two parts:
 
@@ -81,6 +82,7 @@ Do not edit, create, or delete any source file. You may write scratch scripts fo
 but the worktree must end this session with a clean \`git status\`.
 
 ${evidenceInstruction(evidencePath)}
+${attachmentInstruction(attachments)}
 
 Flag blockedReason as "deny-path" if a fix would touch any of these:
 ${denyPaths.map((p) => `  - ${p}`).join("\n")}
@@ -158,7 +160,7 @@ export async function runTriage(
 
   if (opts.dryRun) {
     console.log(`\n${dim("[dry-run] would triage in a fresh worktree with this prompt:")}\n`);
-    console.log(PROMPT(issue, config.worker.denyPaths, "<run artifact dir>/evidence"));
+    console.log(PROMPT(issue, config.worker.denyPaths, "<run artifact dir>/evidence", savedAttachments(target, issue.number)));
     return null;
   }
 
@@ -176,7 +178,9 @@ export async function runTriage(
   await github.addLabels(issue.number, ["in-progress"]);
   await react(loaded, issue, "working");
 
-  const run = await runPhase("triage", PROMPT(issue, config.worker.denyPaths, evidence), VerdictSchema, {
+  const attachments = savedAttachments(target, issue.number);
+  if (attachments.length > 0) info(`  ${dim(`${attachments.length} attachment(s) from the reporter`)}`);
+  const run = await runPhase("triage", PROMPT(issue, config.worker.denyPaths, evidence, attachments), VerdictSchema, {
     cwd: worktree.path,
     artifactDir,
     model: config.worker.triageModel,

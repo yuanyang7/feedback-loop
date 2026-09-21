@@ -11,6 +11,7 @@ import { GitHubClient, type Issue } from "./github.js";
 import { heldBack, orderQueue, severityOf } from "../worker/pickup.js";
 import { enqueueRequest, readQueue } from "../worker/queue.js";
 import { anchorOf, groupMessages, renderReport, type Report } from "./group.js";
+import { saveAttachments } from "./attachments.js";
 import {
   activeRuns, claimRun, concurrencyRefusal, describeRejection, HELP, isOperator, parseCommand,
   startWorker,
@@ -208,6 +209,22 @@ export async function runIntake(loaded: LoadedConfig, opts: IntakeOptions): Prom
     const number = await github.createIssue({ title, body, labels });
     filed += 1;
     info(`${label} ${bold(`filed #${number}`)} ${decision.title}`);
+
+    // Now, not when a run eventually starts: Discord's CDN links are signed and
+    // expire in about a day, so a run tomorrow would find nothing there.
+    const files = await saveAttachments(target, number, report.messages, (m) => warn(`  ${m}`));
+    if (files.length > 0) {
+      info(`  ${dim(`saved ${files.length} attachment(s) for the worker to read`)}`);
+      await github
+        .commentOnIssue(
+          number,
+          `### 📎 Attached by the reporter\n\n` +
+            files.map((f) => `- \`${f}\``).join("\n") +
+            `\n\n<sub>Downloaded from chat because the links there expire. A worker on this machine ` +
+            `can open them; they are not visible from GitHub.</sub>`,
+        )
+        .catch(() => undefined);
+    }
     // Keep the question mark on a thin report: it is filed, but the reporter is
     // the only one who can make it actionable.
     await setState(discord, config.discord.channelId, anchor.id, lowConfidence ? "unclear" : "logged");
