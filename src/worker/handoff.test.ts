@@ -106,7 +106,7 @@ test("a person's worktree does not land in the namespace `watch` searches", () =
   strictEqual(slug, "manual-7-ios-avatar-is-wrong");
 });
 
-test("the briefing carries what an earlier run found, not just a link", async () => {
+test("the briefing carries what an earlier run found, not just a link", () => {
   const target = "briefed";
   const runs = join(process.env.FEEDBACK_LOOP_HOME!, target, "runs", "2026-01-01T000000-issue-7-avatar");
   mkdirSync(join(runs, "evidence"), { recursive: true });
@@ -117,8 +117,8 @@ test("the briefing carries what an earlier run found, not just a link", async ()
   writeFileSync(join(runs, "evidence", "before.png"), "");
 
   const worktree = { path: mkdtempSync(join(tmpdir(), "fl-wt-")), branch: "fix/manual-7", slug: "manual-7" };
-  const path = await writeBriefing(target, worktree, issueWith([]), "/nonexistent");
-  const text = readFileSync(path!, "utf8");
+  const path = writeBriefing(target, worktree, issueWith([]));
+  const text = readFileSync(path, "utf8");
 
   // The verdict is inlined: a fresh session that only got a path would have
   // to guess that reading it was worth doing.
@@ -130,10 +130,10 @@ test("the briefing carries what an earlier run found, not just a link", async ()
   strictEqual(text.toLowerCase().includes("production"), true);
 });
 
-test("a briefing is still written when no run has touched the issue", async () => {
+test("a briefing is still written when no run has touched the issue", () => {
   const worktree = { path: mkdtempSync(join(tmpdir(), "fl-wt-")), branch: "fix/manual-7", slug: "manual-7" };
-  const path = await writeBriefing("never-run", worktree, issueWith([]), "/nonexistent");
-  strictEqual(readFileSync(path!, "utf8").includes("no run has touched this issue"), true);
+  const path = writeBriefing("never-run", worktree, issueWith([]));
+  strictEqual(readFileSync(path, "utf8").includes("no run has touched this issue"), true);
 });
 
 test("mine and back are commands, and still need a mention", () => {

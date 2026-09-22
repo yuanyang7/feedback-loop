@@ -14,10 +14,8 @@
  * behind it, so a hand-applied one survives at most one tick. `human-owned`
  * is a separate label for exactly that reason: nothing sweeps it.
  */
-import { execFile } from "node:child_process";
-import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
-import { promisify } from "node:util";
+import { existsSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import { bold, cyan, dim, green, info, warn, yellow } from "../core/log.js";
 import { readSecret, requireRepo, type LoadedConfig } from "../core/config.js";
 import { runsDir, stateDir } from "../core/state.js";
@@ -29,8 +27,6 @@ import { ensureWorktree, type Worktree } from "./worktree.js";
 
 /** The label that marks an issue as a person's, not the loop's. */
 export const HUMAN_OWNED = "human-owned";
-
-const exec = promisify(execFile);
 
 export interface HandoffOptions {
   issueNumber: number;
@@ -158,8 +154,7 @@ export async function handOff(loaded: LoadedConfig, opts: HandoffOptions): Promi
   }
 
   if (worktree && !opts.dryRun) {
-    const briefing = await writeBriefing(config.target.name, worktree, issue, requireRepo(loaded));
-    if (briefing) info(`  ${dim(`wrote ${briefing}`)}`);
+    info(`  ${dim(`wrote ${writeBriefing(config.target.name, worktree, issue)}`)}`);
   }
 
   if (!opts.dryRun) {
@@ -233,15 +228,13 @@ export async function handBack(loaded: LoadedConfig, issueNumber: number, dryRun
  * timestamp nobody is going to guess. Dropping a file at the root of the
  * worktree is the one place both a person and an agent reliably read.
  *
- * Excluded locally rather than added to `.gitignore`: the target repo's
- * ignore file is checked in, and a handoff should not need a commit to it.
+ * Left untracked rather than excluded from git here. `.git/info/exclude` is
+ * shared by every worktree of a repository — writing to it from a handoff
+ * would reach into the main checkout and every other task's worktree — and on
+ * a case-insensitive filesystem a `HANDOFF.md` pattern also hides any
+ * `handoff.md`. The target repo ignores this file in its own `.gitignore`.
  */
-export async function writeBriefing(
-  target: string,
-  worktree: Worktree,
-  issue: Issue,
-  repoPath: string,
-): Promise<string | null> {
+export function writeBriefing(target: string, worktree: Worktree, issue: Issue): string {
   const dir = runsDir(target);
   const runs = existsSync(dir)
     ? readdirSync(dir)
@@ -260,6 +253,8 @@ export async function writeBriefing(
     "This issue was taken off the feedback-loop and given to you. The loop will not start runs on",
     "it while it is labelled `human-owned`; hand it back with",
     `\`feedback-loop handoff . --issue ${issue.number} --return\`.`,
+    "",
+    "_This file is untracked and is not meant to be committed; the repo ignores it._",
     "",
     "## Before you run anything",
     "",
@@ -333,26 +328,7 @@ export async function writeBriefing(
 
   const path = join(worktree.path, "HANDOFF.md");
   writeFileSync(path, lines.join("\n"));
-  // Keep it out of the diff without touching the repo's checked-in ignore file.
-  await exclude(repoPath, worktree, "HANDOFF.md");
   return path;
-}
-
-/** Add a path to this worktree's local excludes. Never fails the handoff. */
-async function exclude(repoPath: string, worktree: Worktree, entry: string): Promise<void> {
-  try {
-    const { stdout } = await exec("git", ["-C", worktree.path, "rev-parse", "--git-path", "info/exclude"]);
-    const file = stdout.trim();
-    const path = file.startsWith("/") ? file : join(worktree.path, file);
-    mkdirSync(dirname(path), { recursive: true });
-    const current = existsSync(path) ? readFileSync(path, "utf8") : "";
-    if (!current.split("\n").includes(entry)) {
-      writeFileSync(path, `${current}${current.endsWith("\n") || current === "" ? "" : "\n"}${entry}\n`);
-    }
-  } catch {
-    warn(`could not exclude ${entry} from ${worktree.slug} — it will show up as an untracked file`);
-  }
-  void repoPath;
 }
 
 /**

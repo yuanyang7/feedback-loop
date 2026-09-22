@@ -210,8 +210,10 @@ of every run that touched the issue, and where the transcripts and evidence are.
 the verdict text is inlined, including `attempted` for a run that got stuck, because what a
 previous attempt already ruled out is the reason not to spend the first hour rediscovering it.
 
-It is added to the worktree's `.git/info/exclude` rather than the repo's `.gitignore`, so it never
-needs a commit and never shows up in the diff.
+It is left untracked, and the target repo ignores it. Not `.git/info/exclude`: that file is shared
+by every worktree of a repository, so writing to it from a handoff reaches into the main checkout
+and every other task's worktree — and on a case-insensitive filesystem a `HANDOFF.md` pattern also
+hides any `handoff.md`, which is not a hypothetical.
 
 ## How it decides
 
