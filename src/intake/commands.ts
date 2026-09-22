@@ -63,7 +63,13 @@ export function parseCommand(
   if (verb === "queue") return { kind: "queue" };
   if (verb === "help") return { kind: "help" };
 
-  const issue = Number(rest.replace(/^#/, "").split(/\s+/)[0]);
+  // `mine` and `back` are ordinary sentence openers, and in a command channel
+  // nothing requires a mention to disambiguate them. "back 2 commits and it
+  // still repros" must not release issue #2, so these two take the whole
+  // remainder as the number or nothing: an exact command, or a sentence.
+  const strict = verb === "mine" || verb === "back";
+  const argument = strict ? rest : (rest.split(/\s+/)[0] ?? "");
+  const issue = Number(argument.replace(/^#/, ""));
   if (!Number.isInteger(issue) || issue <= 0) return null;
   return { kind: verb as "triage" | "fix" | "go" | "ready" | "mine" | "back", issue };
 }

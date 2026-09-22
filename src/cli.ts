@@ -211,8 +211,7 @@ async function main(): Promise<number> {
       }
       const loaded = load();
       if (flags.has("--return")) {
-        await handBack(loaded, issueNumber, dryRun);
-        return 0;
+        return (await handBack(loaded, issueNumber, dryRun)) ? 0 : 1;
       }
       const s = argv.indexOf("--slug");
       const p = argv.indexOf("--prefix");

@@ -12,7 +12,7 @@ import { heldBack, orderQueue, severityOf } from "../worker/pickup.js";
 import { enqueueRequest, readQueue } from "../worker/queue.js";
 import { anchorOf, groupMessages, renderReport, type Report } from "./group.js";
 import { saveAttachments } from "./attachments.js";
-import { handBackFromChat, handOffFromChat } from "../worker/handoff.js";
+import { handBackFromChat, handOffFromChat, HUMAN_OWNED } from "../worker/handoff.js";
 import {
   activeRuns, claimRun, concurrencyRefusal, describeRejection, HELP, isOperator, parseCommand,
   startWorker,
@@ -433,6 +433,12 @@ async function openGate(loaded: LoadedConfig, issue: number, dryRun: boolean): P
   if (found.state !== "OPEN") return `#${issue} is closed.`;
 
   const has = (name: string): boolean => found.labels.some((l) => l.name === name);
+  // Before the agent-ready check: clearing a handed-off issue puts it back in
+  // line for a run in the worktree a person is working in, and `ready` is a
+  // separate path from the chain's own refusal.
+  if (has(HUMAN_OWNED)) {
+    return `#${issue} is handed off to a person — clearing it would queue a run on work someone is already doing. Say \`back ${issue}\` first.`;
+  }
   if (has(config.github.labels.agentReady)) {
     return `#${issue} is already cleared — reply \`triage ${issue}\` to start one.`;
   }
@@ -477,6 +483,12 @@ async function gateRefusal(
   if (issue.state !== "OPEN") return `Can't run \`${command.kind}\` — #${command.issue} is closed.`;
 
   const has = (name: string): boolean => issue.labels.some((l) => l.name === name);
+  // First, and for every verb including `go`: `fix` is gated on `ready-to-fix`,
+  // which a handoff deliberately leaves in place, so without this a triaged
+  // issue could be fixed out from under whoever took it over.
+  if (has(HUMAN_OWNED)) {
+    return `Can't run \`${command.kind}\` — #${command.issue} is handed off to a person. Say \`back ${command.issue}\` first.`;
+  }
   // `go` clears the gate itself — typing it at an issue is the decision.
   if (command.kind === "go") {
     return has("needs-info")

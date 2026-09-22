@@ -30,6 +30,12 @@ export const HUMAN_OWNED = "human-owned";
 
 export interface HandoffOptions {
   issueNumber: number;
+  /**
+   * Which half of the pipeline this host runs. A host that cannot start runs
+   * also cannot see them: `worker.lock` is a local file and `process.kill` a
+   * local check, so on a split deployment the run is invisible from here.
+   */
+  role?: "all" | "intake" | "worker";
   /** Worktree directory name. Defaults to `manual-<n>-<words from title>`. */
   slug?: string;
   /** Branch prefix, per the target repo's conventional-commit rules. */
@@ -100,7 +106,8 @@ export async function releaseToHuman(
     info(`  ${dim("dequeuing the run that was already asked for")}`);
     if (!dryRun) await dropRequest(github, config, issue.number, "Dequeued — a person took this over.");
   }
-  // Only ever stale here: a live run is refused before we get this far.
+  // Stale by elimination: a live local run was refused above, and on a host
+  // that cannot see runs at all this label was refused above too.
   if (has("in-progress")) {
     info(`  ${dim("clearing a stale in-progress claim")}`);
     if (!dryRun) await github.removeLabels(issue.number, ["in-progress"]);
@@ -133,9 +140,33 @@ export async function handOff(loaded: LoadedConfig, opts: HandoffOptions): Promi
     );
     return null;
   }
+  // No local lock is not the same as no run. On an intake host there is no
+  // lock file to consult, so `in-progress` is the only evidence there is, and
+  // treating it as stale here would both grant the handoff and strip the live
+  // run's claim — which then defeats `promoteAutoWork`'s "nothing in flight"
+  // guard and lets it queue a second issue on top of the run still going.
+  if (opts.role === "intake" && issue.labels.some((l) => l.name === "in-progress")) {
+    warn(
+      `#${issue.number} is labelled in-progress and this host cannot see the run — ` +
+        `it is on the worker host. Wait for it to finish, or take it over from there.`,
+    );
+    return null;
+  }
 
   info(`${bold(`#${issue.number}`)} ${cyan(issue.title)}`);
-  await releaseToHuman(github, config, issue, opts.dryRun);
+  try {
+    await releaseToHuman(github, config, issue, opts.dryRun);
+  } catch (error) {
+    // Four mutations, no transaction. Every intermediate state is one the loop
+    // now holds back — `heldBack` refuses anything wearing HUMAN_OWNED — so the
+    // issue is safe, but it is half-claimed and only a person can finish it.
+    // Saying so beats a stack trace that reads as "nothing happened".
+    warn(
+      `#${issue.number} is only partly handed off: ${error instanceof Error ? error.message : String(error)}\n` +
+        `  Nothing will start on it (it is labelled ${HUMAN_OWNED}), but run this again to finish the handoff.`,
+    );
+    return null;
+  }
 
   let worktree: Worktree | null = null;
   if (!opts.noWorktree) {
@@ -349,7 +380,7 @@ export async function handOffFromChat(
 ): Promise<string> {
   try {
     if (dryRun) return `[dry-run] would take #${issueNumber} off the loop`;
-    const worktree = await handOff(loaded, { issueNumber, noWorktree: role === "intake", dryRun: false });
+    const worktree = await handOff(loaded, { issueNumber, noWorktree: role === "intake", role, dryRun: false });
     if (!worktree) {
       return role === "intake"
         ? `#${issueNumber} is yours — I won't touch it. No worktree: this host has no checkout, so make one where you work.`

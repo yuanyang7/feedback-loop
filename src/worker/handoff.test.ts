@@ -13,6 +13,7 @@ import test from "node:test";
 
 process.env.FEEDBACK_LOOP_HOME = mkdtempSync(join(tmpdir(), "fl-handoff-"));
 const { blockingRun, releaseToHuman, slugForHandoff, writeBriefing, HUMAN_OWNED } = await import("./handoff.js");
+const { heldBack } = await import("./pickup.js");
 const { parseCommand } = await import("../intake/commands.js");
 import type { Config } from "../core/config.js";
 import type { GitHubClient, Issue } from "../intake/github.js";
@@ -136,7 +137,15 @@ test("a briefing is still written when no run has touched the issue", () => {
   strictEqual(readFileSync(path, "utf8").includes("no run has touched this issue"), true);
 });
 
-test("mine and back are commands, and still need a mention", () => {
+test("a handed-off issue is held out of every queue, not just the ones that start runs", () => {
+  // `heldBack` is what `nextIssue`, `promoteAutoWork` and the queue display all
+  // agree on. Missing here, a handed-off issue gets enqueued and then held by
+  // `nextRequest` forever — which wedges promotion for every issue behind it.
+  strictEqual(heldBack(issueWith([HUMAN_OWNED, "agent-ready"])), HUMAN_OWNED);
+  strictEqual(heldBack(issueWith(["agent-ready"])), null);
+});
+
+test("mine and back need an exact issue number, because a mention may not be required", () => {
   const message = (content: string) => ({
     content,
     mentions: [{ id: "bot" }],
@@ -144,8 +153,20 @@ test("mine and back are commands, and still need a mention", () => {
   }) as never;
   deepStrictEqual(parseCommand(message("<@bot> mine 1207"), ["bot"]), { kind: "mine", issue: 1207 });
   deepStrictEqual(parseCommand(message("<@bot> back #1207"), ["bot"]), { kind: "back", issue: 1207 });
-  // "mine" is an ordinary English word; without the mention it is chat.
-  strictEqual(parseCommand({ content: "mine 1207", mentions: [], author: { id: "u" } } as never, ["bot"]), null);
   // A verb with no issue number is not a command, it is someone talking.
   strictEqual(parseCommand(message("<@bot> mine"), ["bot"]), null);
+  // In the report channel a mention is still what marks an instruction.
+  strictEqual(parseCommand({ content: "mine 1207", mentions: [], author: { id: "u" } } as never, ["bot"]), null);
+
+  // In a command channel `requireMention` is false, so these two words carry
+  // no marker at all — an ordinary sentence must not release someone's claim.
+  const bare = (content: string) =>
+    parseCommand({ content, mentions: [], author: { id: "u" } } as never, ["bot"], { requireMention: false });
+  strictEqual(bare("back 2 commits and it still repros"), null);
+  strictEqual(bare("mine 1207 looks like the same bug"), null);
+  deepStrictEqual(bare("back 1207"), { kind: "back", issue: 1207 });
+
+  // The older verbs keep taking the first token: they are not English words,
+  // so a trailing sentence after the number is a comment, not an ambiguity.
+  deepStrictEqual(bare("go 1207 please"), { kind: "go", issue: 1207 });
 });

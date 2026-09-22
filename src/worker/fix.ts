@@ -26,6 +26,7 @@ import { evidenceDir, evidenceInstruction, hasImages, listEvidence, sweepWorktre
 import { announce, announcer, firstSentence } from "./announce.js";
 import { findingsFrom, parseCiFailure, renderCiFailure } from "./ci.js";
 import { shareEvidence } from "./share.js";
+import { HUMAN_OWNED } from "./handoff.js";
 
 const exec = promisify(execFile);
 
@@ -869,6 +870,12 @@ async function pickIssue(
     const issue = await github.getIssue(explicit);
     if (!issue) return warnNull(`#${explicit} not found.`);
     if (issue.state !== "OPEN") return warnNull(`#${explicit} is ${issue.state.toLowerCase()}.`);
+    if (issue.labels.some((l) => l.name === HUMAN_OWNED)) {
+      return warnNull(
+        `#${explicit} is handed off to a person (\`${HUMAN_OWNED}\`). Hand it back first: ` +
+          `feedback-loop handoff . --issue ${explicit} --return`,
+      );
+    }
     if (!issue.labels.some((l) => l.name === readyLabel)) {
       return warnNull(
         `#${explicit} is not labelled ${readyLabel}. Only an issue triage has actually reproduced ` +
@@ -877,8 +884,12 @@ async function pickIssue(
     }
     return issue;
   }
+  // `ready-to-fix` survives a handoff on purpose — it is triage's finding, and
+  // throwing it away would make handing the issue back cost a second triage.
+  // So the exclusion has to happen here instead.
   const candidates = await github.listIssues({ labels: [readyLabel], state: "open" });
-  return candidates.filter((i) => !i.labels.some((l) => l.name === "needs-decision"))[0] ?? null;
+  const blocked = ["needs-decision", HUMAN_OWNED];
+  return candidates.filter((i) => !i.labels.some((l) => blocked.includes(l.name)))[0] ?? null;
 }
 
 function warnNull(message: string): null {

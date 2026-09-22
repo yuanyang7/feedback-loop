@@ -333,7 +333,12 @@ export function heldBack(issue: Issue): string | null {
   // that crashes reproducibly would otherwise be retried every tick forever.
   // It does not block an explicit ask — nextRequest only refuses needs-info —
   // which is the whole point of the two being different states.
-  for (const label of ["needs-decision", "needs-info", "in-progress", "run-failed"]) {
+  // HUMAN_OWNED is here rather than only at the paths that start runs: this
+  // function is what `nextIssue`, `promoteAutoWork` and every queue display
+  // agree on, and a handed-off issue that reaches `promoteAutoWork` gets
+  // enqueued, held forever by `nextRequest`, and wedges auto-promotion for
+  // every other issue behind it — a liveness failure with no error anywhere.
+  for (const label of ["needs-decision", "needs-info", "in-progress", "run-failed", HUMAN_OWNED]) {
     if (names.includes(label)) return label;
   }
   return null;
