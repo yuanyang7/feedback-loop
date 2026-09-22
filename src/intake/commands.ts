@@ -28,11 +28,13 @@ export type Command =
   | { kind: "fix"; issue: number }
   | { kind: "ready"; issue: number }
   | { kind: "go"; issue: number }
+  | { kind: "mine"; issue: number }
+  | { kind: "back"; issue: number }
   | { kind: "status" }
   | { kind: "queue" }
   | { kind: "help" };
 
-const VERBS = /^(triage|fix|ready|go|status|queue|help)\b/i;
+const VERBS = /^(triage|fix|ready|go|mine|back|status|queue|help)\b/i;
 
 /**
  * Recognise a command, or return null and let the message be treated as a
@@ -63,7 +65,7 @@ export function parseCommand(
 
   const issue = Number(rest.replace(/^#/, "").split(/\s+/)[0]);
   if (!Number.isInteger(issue) || issue <= 0) return null;
-  return { kind: verb as "triage" | "fix" | "go", issue };
+  return { kind: verb as "triage" | "fix" | "go" | "ready" | "mine" | "back", issue };
 }
 
 export function isOperator(message: DiscordMessage, operatorIds: string[]): boolean {
@@ -219,6 +221,8 @@ export const HELP = [
   "`triage <issue>` — reproduce and size it. Never edits code.",
   "`fix <issue>` — implement, review adversarially, open a PR. Never merges.",
   "`go <issue>` — all of the above in one run: clear it, reproduce it, fix it, open the PR.",
+  "`mine <issue>` — take it off me. I stop touching it, and a worktree is set up for you to work in.",
+  "`back <issue>` — hand it back when you're done with it.",
   "`status` — spend, and what is waiting on you.",
   "`queue` — what runs next, in order.",
   "",

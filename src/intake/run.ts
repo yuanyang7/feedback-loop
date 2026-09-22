@@ -12,6 +12,7 @@ import { heldBack, orderQueue, severityOf } from "../worker/pickup.js";
 import { enqueueRequest, readQueue } from "../worker/queue.js";
 import { anchorOf, groupMessages, renderReport, type Report } from "./group.js";
 import { saveAttachments } from "./attachments.js";
+import { handBackFromChat, handOffFromChat } from "../worker/handoff.js";
 import {
   activeRuns, claimRun, concurrencyRefusal, describeRejection, HELP, isOperator, parseCommand,
   startWorker,
@@ -309,6 +310,16 @@ async function handleCommands(
     }
     if (command.kind === "ready") {
       await reply(await openGate(loaded, command.issue, dryRun));
+      continue;
+    }
+    // Before the concurrency and gate checks below: those ask whether a run
+    // may start, and this is the command for when none should.
+    if (command.kind === "mine") {
+      await reply(await handOffFromChat(loaded, command.issue, dryRun, role));
+      continue;
+    }
+    if (command.kind === "back") {
+      await reply(await handBackFromChat(loaded, command.issue, dryRun));
       continue;
     }
 

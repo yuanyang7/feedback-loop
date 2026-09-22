@@ -6,13 +6,14 @@
  * prevent.
  */
 import { deepStrictEqual, strictEqual } from "node:assert/strict";
-import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
 process.env.FEEDBACK_LOOP_HOME = mkdtempSync(join(tmpdir(), "fl-handoff-"));
-const { blockingRun, releaseToHuman, slugForHandoff, HUMAN_OWNED } = await import("./handoff.js");
+const { blockingRun, releaseToHuman, slugForHandoff, writeBriefing, HUMAN_OWNED } = await import("./handoff.js");
+const { parseCommand } = await import("../intake/commands.js");
 import type { Config } from "../core/config.js";
 import type { GitHubClient, Issue } from "../intake/github.js";
 
@@ -103,4 +104,48 @@ test("a person's worktree does not land in the namespace `watch` searches", () =
   const slug = slugForHandoff(7, "[feedback] iOS: avatar is wrong");
   strictEqual(slug.startsWith("issue-7"), false);
   strictEqual(slug, "manual-7-ios-avatar-is-wrong");
+});
+
+test("the briefing carries what an earlier run found, not just a link", async () => {
+  const target = "briefed";
+  const runs = join(process.env.FEEDBACK_LOOP_HOME!, target, "runs", "2026-01-01T000000-issue-7-avatar");
+  mkdirSync(join(runs, "evidence"), { recursive: true });
+  writeFileSync(
+    join(runs, "triage.verdict.json"),
+    JSON.stringify({ reproduced: true, evidenceKind: "proven-by-code", evidence: "messages.en.ts:506 still says VIBE//PLAT" }),
+  );
+  writeFileSync(join(runs, "evidence", "before.png"), "");
+
+  const worktree = { path: mkdtempSync(join(tmpdir(), "fl-wt-")), branch: "fix/manual-7", slug: "manual-7" };
+  const path = await writeBriefing(target, worktree, issueWith([]), "/nonexistent");
+  const text = readFileSync(path!, "utf8");
+
+  // The verdict is inlined: a fresh session that only got a path would have
+  // to guess that reading it was worth doing.
+  strictEqual(text.includes("messages.en.ts:506 still says VIBE//PLAT"), true);
+  strictEqual(text.includes("proven-by-code"), true);
+  strictEqual(text.includes(join(runs, "evidence")), true);
+  // The trap that costs real data if a handed-off session misses it.
+  strictEqual(text.includes("npm run lab -- setup --yes"), true);
+  strictEqual(text.toLowerCase().includes("production"), true);
+});
+
+test("a briefing is still written when no run has touched the issue", async () => {
+  const worktree = { path: mkdtempSync(join(tmpdir(), "fl-wt-")), branch: "fix/manual-7", slug: "manual-7" };
+  const path = await writeBriefing("never-run", worktree, issueWith([]), "/nonexistent");
+  strictEqual(readFileSync(path!, "utf8").includes("no run has touched this issue"), true);
+});
+
+test("mine and back are commands, and still need a mention", () => {
+  const message = (content: string) => ({
+    content,
+    mentions: [{ id: "bot" }],
+    author: { id: "u", username: "u" },
+  }) as never;
+  deepStrictEqual(parseCommand(message("<@bot> mine 1207"), ["bot"]), { kind: "mine", issue: 1207 });
+  deepStrictEqual(parseCommand(message("<@bot> back #1207"), ["bot"]), { kind: "back", issue: 1207 });
+  // "mine" is an ordinary English word; without the mention it is chat.
+  strictEqual(parseCommand({ content: "mine 1207", mentions: [], author: { id: "u" } } as never, ["bot"]), null);
+  // A verb with no issue number is not a command, it is someone talking.
+  strictEqual(parseCommand(message("<@bot> mine"), ["bot"]), null);
 });

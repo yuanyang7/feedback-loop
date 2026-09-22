@@ -195,6 +195,24 @@ has to read.
 `--no-worktree` claims the issue and leaves the working copy to you. `--dry-run` prints what it
 would do and writes nothing.
 
+From chat it is `mine <issue>`, and `back <issue>` to return it — the same thing, for when you are
+not at the machine. An intake host claims the issue and stops there: it has no checkout to make a
+worktree in, and guessing at one on the wrong machine is worse than saying where the work happens.
+
+### What the next session inherits
+
+A fresh agent window opened in that worktree starts knowing nothing about any of this. The triage
+verdict, the screenshots, the log of the attempt that fell over — all of it lives under the state
+directory, keyed by a run timestamp nobody is going to guess.
+
+So the handoff writes `HANDOFF.md` at the root of the worktree: the report as filed, the verdict
+of every run that touched the issue, and where the transcripts and evidence are. Not just paths —
+the verdict text is inlined, including `attempted` for a run that got stuck, because what a
+previous attempt already ruled out is the reason not to spend the first hour rediscovering it.
+
+It is added to the worktree's `.git/info/exclude` rather than the repo's `.gitignore`, so it never
+needs a commit and never shows up in the diff.
+
 ## How it decides
 
 Intake takes each message on its own — one message, one report — classifies it as
