@@ -167,6 +167,34 @@ that it cannot outrun you.
 It starts one run per tick and returns. The spend caps, the concurrency limit and the reproduce
 gate all still apply.
 
+### Taking one back
+
+Some issues are yours. `handoff` takes one off the loop and gives you somewhere to work on it:
+
+```bash
+feedback-loop handoff . --issue 1207
+```
+
+It refuses if a run is live on that issue — naming the pid, so you can decide whether to wait or
+stop it — and otherwise claims the issue with `human-owned`, removes `agent-ready`, drains any
+queued request, and makes a worktree off the base branch with `node_modules` already cloned into
+it. The worktree is `manual-<n>-…`, deliberately outside the `issue-<n>-…` namespace a run uses
+and `watch --issue N` searches. Set up its database and port with `npm run lab -- setup --yes`
+before running anything: a worktree's `.env` points at production.
+
+While `human-owned` is set nothing starts on that issue — not auto-promotion, not a queued
+request, and not a `go` typed at it by name, which refuses rather than re-applying the clearance
+you just removed. In chat it shows as 🔧, the same as a run working on it, because from the
+reporter's side it is the same thing.
+
+`--return` gives it back. That removes `human-owned` and stops there: `agent-ready` is not
+re-applied, because what made it eligible was a judgement about an issue you have since been
+editing. Asking for it again is one command; a run on a stale clearance is a pull request someone
+has to read.
+
+`--no-worktree` claims the issue and leaves the working copy to you. `--dry-run` prints what it
+would do and writes nothing.
+
 ## How it decides
 
 Intake takes each message on its own — one message, one report — classifies it as

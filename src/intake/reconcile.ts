@@ -6,6 +6,7 @@ import { DiscordClient } from "./discord.js";
 import { setState, type State } from "./emoji.js";
 import { decodeFooter } from "./footer.js";
 import { GitHubClient, type Issue } from "./github.js";
+import { HUMAN_OWNED } from "../worker/handoff.js";
 
 /**
  * Pull the truth back from GitHub. State changes happen there — you merge the
@@ -146,6 +147,8 @@ async function deriveState(github: GitHubClient, issue: Issue): Promise<State> {
   const pr = await github.linkedPullRequest(issue.number);
   if (pr?.state === "MERGED") return "merged";
   if (pr?.state === "OPEN") return "prReady";
-  if (labels.has("in-progress")) return "working";
+  // A person holding it is as much "being worked on" as a run is, and the
+  // alternative reads as though the report was filed and then forgotten.
+  if (labels.has("in-progress") || labels.has(HUMAN_OWNED)) return "working";
   return "logged";
 }

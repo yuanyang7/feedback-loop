@@ -24,6 +24,7 @@ import { GitHubClient, type Issue } from "../intake/github.js";
 import { checkGate } from "./gate.js";
 import { readStatus, recordStatus } from "../core/tracker.js";
 import { dropRequest, enqueueRequest, readQueue, recordAsk, type RunRequest } from "./queue.js";
+import { HUMAN_OWNED } from "./handoff.js";
 
 /**
  * Drain the queue: start the oldest asked-for run that can still run.
@@ -221,6 +222,13 @@ async function nextRequest(
     // clears its own gate, but nothing acts on an issue too thin to act on.
     if (issue.labels.some((l) => l.name === "needs-info")) {
       info(`  ${dim(`holding queued #${request.issue} — needs-info`)}`);
+      continue;
+    }
+    // A handoff drains the queue as it claims, so this only catches a request
+    // made after the fact — but that is the case where a person is already in
+    // the worktree, which is the worst one to get wrong.
+    if (issue.labels.some((l) => l.name === HUMAN_OWNED)) {
+      info(`  ${dim(`holding queued #${request.issue} — a person has it`)}`);
       continue;
     }
     return { request, issue };

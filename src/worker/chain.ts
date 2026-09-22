@@ -11,6 +11,7 @@
  * happens on a timer.
  */
 import { readSecret, type LoadedConfig } from "../core/config.js";
+import { HUMAN_OWNED } from "./handoff.js";
 import { bold, cyan, dim, info, warn } from "../core/log.js";
 import { GitHubClient } from "../intake/github.js";
 import { announce, announcer, firstSentence } from "./announce.js";
@@ -43,6 +44,18 @@ export async function runChain(
   const has = (name: string): boolean => issue.labels.some((l) => l.name === name);
   if (has(labels.needsInfo)) {
     const message = `#${issue.number} is labelled \`needs-info\` — too thin to act on. It needs specifics before any of this can start.`;
+    warn(message);
+    await announce(loaded, opts.announceChannel, message, opts.announceMessage);
+    return;
+  }
+
+  // Before the clearance below, which would otherwise re-apply `agent-ready`
+  // to an issue a person deliberately took it off — and put a run into the
+  // worktree they are working in.
+  if (has(HUMAN_OWNED)) {
+    const message =
+      `#${issue.number} was handed off to a person (\`${HUMAN_OWNED}\`). ` +
+      `Hand it back first: \`feedback-loop handoff . --issue ${issue.number} --return\`.`;
     warn(message);
     await announce(loaded, opts.announceChannel, message, opts.announceMessage);
     return;

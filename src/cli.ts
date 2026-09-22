@@ -7,6 +7,7 @@ import { readIntakeState, readRunLog } from "./core/state.js";
 import { runIntake } from "./intake/run.js";
 import { runReconcile } from "./intake/reconcile.js";
 import { runTriage } from "./worker/triage.js";
+import { handBack, handOff, HUMAN_OWNED } from "./worker/handoff.js";
 import { runFix } from "./worker/fix.js";
 import { serveDashboard } from "./dashboard/server.js";
 import { watchRun } from "./worker/watch.js";
@@ -29,6 +30,7 @@ Usage:
   feedback-loop triage [dir]          Reproduce + size one agent-ready issue (never fixes)
   feedback-loop fix [dir]             Fix + adversarial review + open a PR (never merges)
   feedback-loop go [dir] --issue N    triage + fix + PR in one run (still never merges)
+  feedback-loop handoff [dir] --issue N  Take one issue off the loop and work on it yourself
   feedback-loop queue [dir]           What runs next, in order, and what is held back
   feedback-loop status [dir]          Queue counts, recent runs, and caps
   feedback-loop dashboard [dir]       Local page: runs, verdicts, before/after screenshots
@@ -38,7 +40,11 @@ Usage:
 Options:
   --dry-run        Classify and print; create nothing, react to nothing
   --backfill N     On a fresh cursor, process the last N messages (default: skip history)
-  --issue N        triage/fix: act on this issue instead of picking one
+  --issue N        triage/fix/handoff: act on this issue instead of picking one
+  --slug NAME      handoff: worktree directory name (default: manual-<n>-<title>)
+  --prefix P       handoff: branch prefix, e.g. fix (default: fix)
+  --no-worktree    handoff: claim the issue only; make the worktree yourself
+  --return         handoff: give the issue back to the loop
   --announce ID    triage/fix: post the result to this Discord channel when done
   --port N         dashboard: listen on this port (default 7777)
   --config PATH    Load this config file instead of finding one in a repo.
@@ -195,6 +201,31 @@ async function main(): Promise<number> {
         announceMessage: msgFlag(argv),
       });
       return 0;
+    }
+    case "handoff": {
+      const i = argv.indexOf("--issue");
+      const issueNumber = i >= 0 ? Number(argv[i + 1]) : NaN;
+      if (!Number.isInteger(issueNumber) || issueNumber <= 0) {
+        fail("handoff needs an issue: feedback-loop handoff . --issue 1207");
+        return 1;
+      }
+      const loaded = load();
+      if (flags.has("--return")) {
+        await handBack(loaded, issueNumber, dryRun);
+        return 0;
+      }
+      const s = argv.indexOf("--slug");
+      const p = argv.indexOf("--prefix");
+      const worktree = await handOff(loaded, {
+        issueNumber,
+        slug: s >= 0 ? argv[s + 1] : undefined,
+        prefix: p >= 0 ? argv[p + 1] : undefined,
+        noWorktree: flags.has("--no-worktree"),
+        dryRun,
+      });
+      // Nothing was claimed when a live run or a closed issue refused it, and
+      // a script that chains on this should see that rather than press on.
+      return worktree === null && !flags.has("--no-worktree") && !dryRun ? 1 : 0;
     }
     case "queue":
       return queue(load());
@@ -456,6 +487,7 @@ async function labels(loaded: LoadedConfig): Promise<number> {
     [config.github.labels.runFailed, "E4E669", "A run fell over; nothing to decide, it just needs another attempt"],
     [config.github.labels.needsInfo, "D4C5F9", "Filed below the confidence floor; ask the reporter for specifics"],
     ["in-progress", "FBCA04", "A worker run is currently working on this"],
+    [HUMAN_OWNED, "0052CC", "A person is working on this; the loop will not start runs on it"],
     [config.github.labels.agentPr, "5319E7", "Opened by a worker run; awaiting human review and merge"],
     [config.github.labels.readyToFix, "0E8A16", "Reproduced by triage; cleared for a fix attempt"],
     [config.github.labels.requested, "1D76DB", "Someone asked for a run on this; waiting for a worker host"],
