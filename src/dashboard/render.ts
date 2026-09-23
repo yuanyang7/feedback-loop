@@ -164,7 +164,7 @@ export function renderPage(overview: Overview, runs: RunSummary[], token: string
   </div>
 
   ${overview.groups.map((g) => `<section class="group card" id="g-${esc(g.key)}" hidden>
-    ${g.issues.map((issue) => renderIssue(issue, overview, g.key === "need-you")).join("")}
+    ${g.issues.map((issue) => renderIssue(issue, overview, g.key === "need-you", g.key === "completed")).join("")}
   </section>`).join("")}
   <section class="group card" id="g-prs" hidden>
     ${overview.agentPrs.map((pr) => `<div class="issue"><span class="title"><a href="${esc(pr.url)}" target="_blank" rel="noopener">#${pr.number}</a> ${esc(pr.title)}</span></div>`).join("")}
@@ -247,13 +247,13 @@ function button(action: string, issue: number, opts: { disabled?: boolean; prima
   return `<button class="act${opts.primary ? " primary" : ""}" data-action="${action}" data-issue="${issue}" title="${esc(TITLES[action] ?? action)}"${opts.disabled ? " disabled" : ""}>${esc(LABELS[action] ?? action)}</button>`;
 }
 
-function renderIssue(issue: IssueRow, overview: Overview, answerable = false): string {
+function renderIssue(issue: IssueRow, overview: Overview, answerable = false, closed = false): string {
   const chips = issue.labels.map((l) => `<span class="chip">${esc(l)}</span>`).join("");
   return `<div class="issue">
     <span class="title"><a href="${esc(issue.url)}" target="_blank" rel="noopener"><b>#${issue.number}</b></a> ${esc(issue.title)}
       ${issue.running ? `<span class="tag ok">${esc(issue.running)}</span>` : ""}
       <span class="chips">${chips}</span></span>
-    ${actionsFor(issue, overview)}
+    ${closed ? (issue.hasLog ? `<div class="acts">${button("log", issue.number)}</div>` : "") : actionsFor(issue, overview)}
     ${answerable && !issue.labels.includes(overview.labels.humanOwned) ? answerBox(issue, overview) : ""}
   </div>`;
 }
@@ -277,7 +277,9 @@ function renderRun(run: RunSummary, overview: Overview, rows: Map<number, IssueR
   const row = run.issue ? rows.get(run.issue) : undefined;
   return `<details class="run"${shots.length > 0 ? " open" : ""}>
   <summary>
-    <b>${run.issue ? `#${run.issue}` : run.id}</b>
+    <b>${run.issue
+      ? `<a href="${esc(row?.url ?? `https://github.com/${overview.repo}/issues/${run.issue}`)}" target="_blank" rel="noopener">#${run.issue}</a>`
+      : esc(run.id)}</b>
     ${row ? `<span>${esc(row.title)}</span>` : ""}
     <span class="tag">${esc(run.kind)}</span>
     <span class="tag ${outcome.className}">${esc(outcome.label)}</span>

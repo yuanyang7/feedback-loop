@@ -185,6 +185,9 @@ async function buildOverview(loaded: LoadedConfig): Promise<Overview> {
     github.listIssues({ labels: [HUMAN_OWNED], state: "open" }),
     github.listPullRequests({ state: "open" }),
   ]);
+  // Most recently closed first is how gh returns them; a hundred is enough to
+  // fill the list after the filter below drops issues the loop never saw.
+  const closed = await github.listIssues({ state: "closed", limit: 100 }).catch(() => []);
   const running = activeRuns(config.target.name);
   // Why each escalated issue is waiting: the loop's last comment on it.
   const asked = new Map<number, string>(
@@ -241,6 +244,16 @@ async function buildOverview(loaded: LoadedConfig): Promise<Overview> {
       { key: "queued", label: "queued", issues: queued.filter(ours).map(row) },
       { key: "handed-off", label: "handed off", issues: humanOwned.filter(ours).map(row) },
       { key: "from-chat", label: "from chat", issues: fromChat.filter(ours).map(row) },
+      {
+        key: "completed",
+        label: "completed",
+        issues: closed.filter(ours).slice(0, 30).map((issue) => {
+          const r = row(issue);
+          // Why it closed is the one thing worth knowing about a closed issue.
+          if (issue.stateReason) r.labels = [issue.stateReason.toLowerCase().replace("_", " "), ...r.labels];
+          return r;
+        }),
+      },
     ],
     canRun: loaded.repoPath !== null || resolveRole(config) === "intake",
     agentPrs: prs
