@@ -76,13 +76,18 @@ export async function serveDashboard(loaded: LoadedConfig, opts: DashboardOption
   // the plist reads as the intent instead of as a number.
   let host = opts.host ?? "127.0.0.1";
   if (host === "tailscale") {
-    for (;;) {
+    // Said once, not every pass. This waits indefinitely by design — the
+    // interface may be minutes away at login, or weeks away if Tailscale is
+    // not installed yet — and a line every ten seconds would bury the log
+    // that is supposed to tell you what went wrong.
+    for (let said = false; ; said = true) {
       const found = tailnetAddress();
       if (found) {
+        if (said) info(`tailnet address is up: ${cyan(found)}`);
         host = found;
         break;
       }
-      warn("waiting for a tailnet address — is Tailscale running?");
+      if (!said) warn("waiting for a tailnet address — is Tailscale running?");
       await new Promise((r) => setTimeout(r, 10_000));
     }
   }
@@ -157,6 +162,7 @@ export async function serveDashboard(loaded: LoadedConfig, opts: DashboardOption
   // A tailnet address does not exist until Tailscale is up, and at login
   // this can easily win that race. Retrying beats failing, because the thing
   // that would have to notice a failure is a launchd job nobody reads.
+  let warnedUnavailable = false;
   for (;;) {
     try {
       await new Promise<void>((ready, broken) => {
@@ -169,7 +175,10 @@ export async function serveDashboard(loaded: LoadedConfig, opts: DashboardOption
       break;
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "EADDRNOTAVAIL") throw error;
-      warn(`${host} is not up yet — retrying in 10s`);
+      if (!warnedUnavailable) {
+        warn(`${host} is not up on this machine yet — retrying every 10s`);
+        warnedUnavailable = true;
+      }
       await new Promise((r) => setTimeout(r, 10_000));
     }
   }
