@@ -6,6 +6,7 @@
  * that look like the agent said something it did not.
  */
 import { spawn } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { copyFileSync, existsSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -65,24 +66,48 @@ however much you found out along the way.`;
 
   info(`  ${dim(`phase ${name}: starting (${opts.model}, effort ${opts.effort})`)}`);
 
-  const stdout = await spawnClaude(
-    [
-      "-p",
-      "--model", opts.model,
-      "--effort", opts.effort,
-      "--max-budget-usd", String(opts.maxBudgetUsd),
-      "--output-format", "json",
-      "--append-system-prompt", opts.playbook,
-      "--permission-mode", "auto",
-      "--permission-prompts", "none",
-      // A variadic flag with an empty list is a parse error, not a no-op.
-      ...(opts.allowedTools.length > 0 ? ["--allowedTools", ...opts.allowedTools] : []),
-      ...(opts.disallowedTools.length > 0 ? ["--disallowedTools", ...opts.disallowedTools] : []),
-    ],
-    fullPrompt,
-    opts.cwd,
-    opts.timeoutMinutes,
-  );
+  // Chosen here rather than read back from the envelope: a session killed at
+  // its time limit writes no envelope, and the id is what lets it be resumed.
+  const sessionId = randomUUID();
+  const flags = (budgetUsd: number): string[] => [
+    "-p",
+    "--model", opts.model,
+    "--effort", opts.effort,
+    "--max-budget-usd", String(budgetUsd),
+    "--output-format", "json",
+    "--append-system-prompt", opts.playbook,
+    "--permission-mode", "auto",
+    "--permission-prompts", "none",
+    // A variadic flag with an empty list is a parse error, not a no-op.
+    ...(opts.allowedTools.length > 0 ? ["--allowedTools", ...opts.allowedTools] : []),
+    ...(opts.disallowedTools.length > 0 ? ["--disallowedTools", ...opts.disallowedTools] : []),
+  ];
+
+  let stdout: string;
+  try {
+    stdout = await spawnClaude(["--session-id", sessionId, ...flags(opts.maxBudgetUsd)], fullPrompt, opts.cwd, opts.timeoutMinutes);
+  } catch (error) {
+    if (!(error instanceof PhaseTimeout)) throw error;
+    // Killed at the limit is usually killed near the end — the work is done
+    // and a build or a test run is what ran long. Starting over throws away
+    // the whole session to recover its last few minutes, so resume it once
+    // with a short deadline and ask for the ending instead.
+    const grace = Math.max(10, Math.round(opts.timeoutMinutes / 4));
+    info(`  ${dim(`phase ${name}: out of time — resuming the session for up to ${grace} minutes to finish`)}`);
+    try {
+      stdout = await spawnClaude(
+        ["--resume", sessionId, ...flags(Math.max(1, opts.maxBudgetUsd / 4))],
+        wrapUpPrompt(opts.timeoutMinutes, grace, verdictPath),
+        opts.cwd,
+        grace,
+      );
+    } catch (again) {
+      if (again instanceof PhaseTimeout) {
+        throw new Error(`${error.message} Resuming it to finish also ran out of time (${grace} more minutes).`);
+      }
+      throw again;
+    }
+  }
 
   writeFileSync(transcriptPath, stdout);
 
@@ -103,7 +128,6 @@ however much you found out along the way.`;
 
   const costUsd = envelope.total_cost_usd ?? 0;
   const turns = envelope.num_turns ?? 0;
-  const sessionId = envelope.session_id;
 
   // The --output-format json envelope carries only the final message, so the
   // turn-by-turn record has to come from the persisted session file. Copy it
@@ -129,6 +153,22 @@ however much you found out along the way.`;
   }
   info(`  ${dim(`phase ${name}: done in ${turns} turn(s), $${costUsd.toFixed(3)}`)}`);
   return { verdict: parsed.data, costUsd, turns, sessionId };
+}
+
+/** A session killed at its wall-clock limit, as opposed to one that failed. */
+class PhaseTimeout extends Error {}
+
+function wrapUpPrompt(limit: number, grace: number, verdictPath: string): string {
+  return `You ran past this phase's ${limit}-minute time limit and your last command was killed.
+You have ${grace} more minutes, and then this session is stopped for good.
+
+Finish now, with what you have:
+- Stop anything you left running (dev servers, watchers, background test or CI runs).
+- Do not start a full CI run, full test suite or production build. The push after this session
+  runs full CI and sends failures back as findings.
+- Commit your work if this phase commits.
+- Write the verdict to ${verdictPath}. If something is unfinished or unverified, say so in it —
+  an honest partial verdict is worth far more than none.`;
 }
 
 /**
@@ -190,7 +230,7 @@ function spawnClaude(
           child.kill("SIGKILL");
         }
         reject(
-          new Error(
+          new PhaseTimeout(
             `session exceeded ${timeoutMinutes} minutes of wall clock and was killed. ` +
               `A blocked session spends nothing, so the spend cap never trips — this is the only ` +
               `thing that stops it. The usual cause is a command that does not return, such as a ` +

@@ -17,6 +17,9 @@ import { GitHubClient } from "../intake/github.js";
 import { announce, announcer, firstSentence } from "./announce.js";
 import { runFix } from "./fix.js";
 import { runTriage } from "./triage.js";
+import { slugForIssue } from "./worktree.js";
+import { existsSync } from "node:fs";
+import { join } from "node:path";
 
 export async function runChain(
   loaded: LoadedConfig,
@@ -69,29 +72,39 @@ export async function runChain(
     if (!opts.dryRun) await github.addLabels(issue.number, [labels.agentReady]);
   }
 
-  info(`${bold("1/2")} triage`);
-  // Triage reports through the chain's own message rather than finishing it —
-  // the run is not over, and a "done" here would release the lock mid-chain.
-  const triaged = await runTriage(loaded, {
-    issueNumber: issue.number, dryRun: opts.dryRun, announceChannel: undefined,
-  });
-  if (opts.dryRun) return;
+  // Already reproduced, and the worktree holding that reproduction — and any
+  // work an interrupted fix left — is still here. Triaging again would pay to
+  // rediscover it, in a worktree that is no longer the clean one triage expects.
+  const worktree = loaded.repoPath
+    ? join(loaded.repoPath, ".worktrees", slugForIssue(issue.number, issue.title))
+    : null;
+  if (has(labels.readyToFix) && worktree && existsSync(worktree) && !opts.dryRun) {
+    info(`${bold("1/2")} triage ${dim("— skipped: already reproduced, worktree kept")}`);
+  } else {
+    info(`${bold("1/2")} triage`);
+    // Triage reports through the chain's own message rather than finishing it —
+    // the run is not over, and a "done" here would release the lock mid-chain.
+    const triaged = await runTriage(loaded, {
+      issueNumber: issue.number, dryRun: opts.dryRun, announceChannel: undefined,
+    });
+    if (opts.dryRun) return;
 
-  // Triage marks ready-to-fix only when it actually reproduced the problem and
-  // found nothing blocking. Re-reading it is how this chain stays honest: the
-  // fix phase is never reached by assumption, only by that label existing.
-  const after = await github.getIssue(issue.number).catch(() => null);
-  const reproduced = after?.labels.some((l) => l.name === labels.readyToFix) ?? false;
-  if (!reproduced) {
-    info(`  ${dim("triage did not clear it for a fix — stopping here")}`);
-    // Say why here. "Needs you" without a reason means opening the issue to
-    // find out whether it wants thirty seconds or an afternoon, every time.
-    const sentence = firstSentence(triaged?.why);
-    const why = sentence ? `\n> ${sentence}` : "";
-    await announce(loaded, opts.announceChannel,
-      `🤔 #${issue.number}: triage stopped short of a fix — **${triaged?.blockedReason ?? "did not complete"}**.${why}\n${issue.url}`,
-    opts.announceMessage);
-    return;
+    // Triage marks ready-to-fix only when it actually reproduced the problem and
+    // found nothing blocking. Re-reading it is how this chain stays honest: the
+    // fix phase is never reached by assumption, only by that label existing.
+    const after = await github.getIssue(issue.number).catch(() => null);
+    const reproduced = after?.labels.some((l) => l.name === labels.readyToFix) ?? false;
+    if (!reproduced) {
+      info(`  ${dim("triage did not clear it for a fix — stopping here")}`);
+      // Say why here. "Needs you" without a reason means opening the issue to
+      // find out whether it wants thirty seconds or an afternoon, every time.
+      const sentence = firstSentence(triaged?.why);
+      const why = sentence ? `\n> ${sentence}` : "";
+      await announce(loaded, opts.announceChannel,
+        `🤔 #${issue.number}: triage stopped short of a fix — **${triaged?.blockedReason ?? "did not complete"}**.${why}\n${issue.url}`,
+      opts.announceMessage);
+      return;
+    }
   }
 
   info(`${bold("2/2")} fix`);

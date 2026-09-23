@@ -86,6 +86,7 @@ const FIX_PROMPT = (
   evidencePath: string,
   previous: Fix | null,
   attachments: string[] = [],
+  leftover = "",
 ) => {
   const retry =
     previousFindings.length === 0
@@ -113,11 +114,17 @@ const FIX_PROMPT = (
 
   return `Fix the bug below. It has already been reproduced — the triage notes say how.
 
-${retry}Work in this worktree, on its existing branch. When the fix is done:
+${retry}${leftover}Work in this worktree, on its existing branch. When the fix is done:
 
 1. Confirm the reported problem is actually gone — drive the same interaction that reproduced it.
    Green tests prove nothing else broke; they do not prove this is fixed.
-2. Run typecheck, lint, test and build. All must pass.
+2. Check your change cheaply: typecheck and lint, and only the tests related to the files you
+   touched — \`npx vitest related <files> --run\` for vitest, \`npx jest --findRelatedTests <files>\`
+   for jest (each follows imports, so it runs the tests that depend on what you changed). Add or
+   update a test for the fix. **Do not run the repo's full CI (\`npm run ci\` or its equivalent), the
+   whole test suite, or a production build**: pushing this branch runs full CI after the session and
+   sends any failure back to you as findings. That suite takes long enough that running it here is
+   what has pushed fixes past their time limit. Never wait on a background command in a loop.
 3. Commit, following the repo's commit message rules. Do not push, and do not open a pull request —
    that happens outside this session.
 
@@ -213,10 +220,25 @@ export async function runFix(
   } catch (error) {
     if (claimed) {
       const github = githubFor(loaded);
+      const issue: Issue = claimed;
+      // A crash is usually the time limit on a fix that was nearly done. The
+      // next attempt reuses this worktree and is told what is in it; pushing
+      // it as well means the work survives this disk.
+      let saved = "";
+      if (loaded.repoPath) {
+        const slug = slugForIssue(issue.number, issue.title);
+        const path = join(loaded.repoPath, ".worktrees", slug);
+        if (existsSync(path)) {
+          saved = await preserveWork(loaded.config, { path, slug, branch: `fix/${slug}` }).catch(() => "");
+        }
+      }
       await github
         .commentOnIssue(
-          claimed.number,
-          `### ⚠️ The fix run crashed\n\n\`\`\`\n${error instanceof Error ? error.message : String(error)}\n\`\`\`\n\nNo changes were pushed. The issue is back in the queue.`,
+          issue.number,
+          `### ⚠️ The fix run crashed\n\n\`\`\`\n${error instanceof Error ? error.message : String(error)}\n\`\`\`\n\n` +
+            (saved
+              ? `The work so far is kept, and the next attempt continues from it.${saved}`
+              : "Nothing had been changed yet. The issue is back in the queue."),
         )
         .catch(() => undefined);
       await github.removeLabels(claimed.number, ["in-progress"]).catch(() => undefined);
@@ -303,6 +325,8 @@ async function runFixInner(
 
   const evidence = evidenceDir(artifactDir);
   const worktree = await ensureWorktree(repoPath, config.target.baseBranch, slug, "fix");
+  const leftover = await leftoverWork(worktree, config.target.baseBranch);
+  if (leftover) info(`  ${dim("worktree has work from an earlier attempt — handing it to the fix session")}`);
   if (!existsSync(join(worktree.path, "node_modules"))) {
     warn("  worktree has no node_modules — triage's setup is gone; the fix session will have to redo it");
   }
@@ -369,7 +393,11 @@ async function runFixInner(
     const fixRun = await runPhase(
       `fix-${attempt}`,
       withDecisions(
-        FIX_PROMPT(issue, triageNotes, config.worker.denyPaths, findings, evidence, previousFix, savedAttachments(target, issue.number)),
+        FIX_PROMPT(
+          issue, triageNotes, config.worker.denyPaths, findings, evidence, previousFix, savedAttachments(target, issue.number),
+          // Only the first attempt: later ones continue this run's own commit.
+          previousFix ? "" : leftover,
+        ),
         decisions,
       ),
       FixSchema,
@@ -712,6 +740,30 @@ function blockedComment(fix: Fix): string {
  * So anything an escalating run produced gets committed and pushed. The branch
  * is explicitly not a candidate for merge: it is a place to look.
  */
+/**
+ * What an earlier, interrupted attempt left in the worktree.
+ *
+ * A worktree is reused across runs, so a fix killed at its time limit leaves
+ * its edits here — and the next session used to start as though the directory
+ * were fresh, noticing them only if it happened to run `git status`.
+ */
+async function leftoverWork(worktree: Worktree, baseBranch: string): Promise<string> {
+  const git = async (...args: string[]): Promise<string> =>
+    (await exec("git", ["-C", worktree.path, ...args]).catch(() => ({ stdout: "" }))).stdout.trim();
+  const commits = await git("log", "--oneline", `origin/${baseBranch}..HEAD`);
+  const dirty = await git("status", "--short");
+  if (!commits && !dirty) return "";
+  return [
+    "An earlier attempt on this issue was interrupted (usually by the time limit) and left work in this",
+    "worktree. Start from it rather than from scratch: read it, keep what is right, finish what is not.",
+    "If it is wrong, discard it deliberately and say so in `risks`.",
+    "",
+    ...(commits ? ["Commits already on this branch:", commits, ""] : []),
+    ...(dirty ? ["Uncommitted changes (`git diff` for the content):", dirty, ""] : []),
+    "",
+  ].join("\n");
+}
+
 async function preserveWork(
   config: LoadedConfig["config"],
   worktree: Worktree,
