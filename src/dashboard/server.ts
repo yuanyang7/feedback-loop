@@ -7,7 +7,7 @@
  * route — `actions.ts` holds them to the same gates.
  */
 import { randomBytes } from "node:crypto";
-import { createReadStream, existsSync, statSync } from "node:fs";
+import { createReadStream, existsSync, readdirSync, statSync } from "node:fs";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { extname, join, normalize, resolve } from "node:path";
 import { readSecret, resolveRole, type LoadedConfig } from "../core/config.js";
@@ -184,6 +184,18 @@ async function buildOverview(loaded: LoadedConfig): Promise<Overview> {
     github.listPullRequests({ state: "open" }),
   ]);
   const running = activeRuns(config.target.name);
+  // GitHub labels are shared with people: `needs-decision` on an issue you
+  // filed by hand is your note, not the loop asking for you. So an issue is
+  // shown only once the loop has a stake in it — it came from chat, someone
+  // cleared or queued it for a run, it was handed off, or a run exists on disk.
+  const ran = new Set(
+    existsSync(runsDir(config.target.name))
+      ? readdirSync(runsDir(config.target.name)).map((d) => Number(/issue-(\d+)-/.exec(d)?.[1])).filter(Boolean)
+      : [],
+  );
+  const ours = (issue: Issue): boolean =>
+    ran.has(issue.number) ||
+    issue.labels.some((l) => [labels.source, labels.agentReady, labels.requested, HUMAN_OWNED].includes(l.name));
   const row = (issue: Issue): IssueRow => ({
     number: issue.number,
     title: issue.title,
@@ -209,13 +221,13 @@ async function buildOverview(loaded: LoadedConfig): Promise<Overview> {
     },
     // Order is the order the tiles appear in: what wants a person first.
     groups: [
-      { key: "need-you", label: "need you", issues: needsDecision.map(row) },
-      { key: "run-failed", label: "run failed", issues: runFailed.map(row) },
-      { key: "reproduced", label: "reproduced", issues: readyToFix.map(row) },
-      { key: "agent-ready", label: "agent-ready", issues: agentReady.map(row) },
-      { key: "queued", label: "queued", issues: queued.map(row) },
-      { key: "handed-off", label: "handed off", issues: humanOwned.map(row) },
-      { key: "from-chat", label: "from chat", issues: fromChat.map(row) },
+      { key: "need-you", label: "need you", issues: needsDecision.filter(ours).map(row) },
+      { key: "run-failed", label: "run failed", issues: runFailed.filter(ours).map(row) },
+      { key: "reproduced", label: "reproduced", issues: readyToFix.filter(ours).map(row) },
+      { key: "agent-ready", label: "agent-ready", issues: agentReady.filter(ours).map(row) },
+      { key: "queued", label: "queued", issues: queued.filter(ours).map(row) },
+      { key: "handed-off", label: "handed off", issues: humanOwned.filter(ours).map(row) },
+      { key: "from-chat", label: "from chat", issues: fromChat.filter(ours).map(row) },
     ],
     canRun: loaded.repoPath !== null || resolveRole(config) === "intake",
     agentPrs: prs
