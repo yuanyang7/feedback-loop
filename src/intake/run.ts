@@ -422,7 +422,7 @@ async function handleCommands(
  * the whole point of the label is that a person decided, and doing it silently
  * on their behalf while starting a run would erase the decision it records.
  */
-async function openGate(loaded: LoadedConfig, issue: number, dryRun: boolean): Promise<string> {
+export async function openGate(loaded: LoadedConfig, issue: number, dryRun: boolean): Promise<string> {
   const { config } = loaded;
   const github = new GitHubClient(
     config.target.repo,
@@ -469,7 +469,7 @@ function attachReplyLinks(target: string, reports: Report[]): Report[] {
   });
 }
 
-async function gateRefusal(
+export async function gateRefusal(
   loaded: LoadedConfig,
   command: { kind: "triage" | "fix" | "go"; issue: number },
 ): Promise<string | null> {

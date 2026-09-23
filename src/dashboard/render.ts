@@ -1,19 +1,36 @@
 /**
- * The page. Plain HTML with inline CSS — this is a local read-only view over
- * files on disk, and a build step would be more machinery than the thing it
- * displays.
+ * The page. Plain HTML with inline CSS and one small script — this is a local
+ * view over files on disk and a few GitHub lists, and a build step would be
+ * more machinery than the thing it displays.
  */
 import type { EvidencePair, RunSummary } from "./scan.js";
+
+export interface IssueRow {
+  number: number;
+  title: string;
+  url: string;
+  labels: string[];
+  /** What is running on it right now, e.g. "fix #1210", or null. */
+  running: string | null;
+  hasLog: boolean;
+}
+
+export interface IssueGroup {
+  key: string;
+  label: string;
+  issues: IssueRow[];
+}
 
 export interface Overview {
   target: string;
   repo: string;
-  fromChat: number;
-  agentReady: number;
-  readyToFix: number;
-  needsDecision: number;
+  /** Label names the buttons key off, as this target configured them. */
+  labels: { agentReady: string; readyToFix: string; needsInfo: string; humanOwned: string };
+  groups: IssueGroup[];
+  /** False when this process has no checkout to start a run in. */
+  canRun: boolean;
   agentPrs: Array<{ number: number; url: string; title: string }>;
-  running: Array<{ what: string; at: string }>;
+  running: Array<{ what: string; at: string; issue: number | null }>;
   spentToday: number;
   dailyBudgetUsd: number;
 }
@@ -39,9 +56,39 @@ h1 { font-size: 20px; margin: 0 0 2px; letter-spacing: -0.01em; }
 h2 { font-size: 15px; margin: 32px 0 10px; letter-spacing: -0.01em; }
 .sub { color: var(--muted); font-size: 13px; margin-bottom: 24px; }
 .card { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 16px; }
-.stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 1px;
+.stats { display: flex; flex-wrap: wrap; gap: 1px;
   background: var(--line); border: 1px solid var(--line); border-radius: 10px; overflow: hidden; }
-.stat { background: var(--panel); padding: 12px 14px; }
+.stat { flex: 1 1 110px; background: var(--panel); padding: 12px 14px; border: 0; text-align: left; color: inherit;
+  font: inherit; }
+button.stat { cursor: pointer; }
+button.stat:hover { background: var(--bg); }
+button.stat[aria-expanded="true"] { box-shadow: inset 0 -2px 0 var(--accent); }
+button.stat:disabled { cursor: default; opacity: 0.55; }
+.group { margin-top: 12px; }
+.group h2 { margin-top: 20px; }
+.issue { display: flex; gap: 8px 12px; align-items: center; flex-wrap: wrap; padding: 10px 0;
+  border-top: 1px solid var(--line); }
+.issue:first-child { border-top: 0; }
+.issue .title { flex: 1 1 260px; min-width: 0; }
+.chips { display: inline-flex; gap: 4px; flex-wrap: wrap; margin-left: 6px; vertical-align: 1px; }
+.chip { font-size: 10.5px; padding: 1px 6px; border-radius: 20px; background: var(--bg);
+  border: 1px solid var(--line); color: var(--muted); }
+.acts { display: flex; gap: 6px; flex-wrap: wrap; }
+.act { font: inherit; font-size: 12.5px; padding: 4px 10px; border-radius: 7px; cursor: pointer;
+  border: 1px solid var(--line); background: var(--panel); color: var(--ink); }
+.act:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
+.act.primary { border-color: var(--accent); color: var(--accent); }
+.act:disabled { opacity: 0.45; cursor: not-allowed; }
+.run-acts { margin-top: 14px; }
+.toast { position: fixed; left: 50%; bottom: 20px; transform: translateX(-50%); max-width: min(640px, calc(100% - 32px));
+  background: var(--ink); color: var(--bg); padding: 10px 14px; border-radius: 9px; font-size: 13.5px;
+  white-space: pre-wrap; box-shadow: 0 6px 24px rgba(0,0,0,.2); z-index: 10; }
+.toast.bad { background: var(--bad); color: #fff; }
+dialog { width: min(920px, calc(100% - 32px)); border: 1px solid var(--line); border-radius: 10px;
+  background: var(--panel); color: var(--ink); padding: 0; }
+dialog::backdrop { background: rgba(0,0,0,.35); }
+dialog header { display: flex; align-items: center; gap: 10px; padding: 12px 16px; border-bottom: 1px solid var(--line); }
+dialog pre { margin: 0; border: 0; border-radius: 0; max-height: 70vh; }
 .stat b { display: block; font-size: 22px; font-weight: 600; font-variant-numeric: tabular-nums; }
 .stat span { color: var(--muted); font-size: 12px; }
 .run { background: var(--panel); border: 1px solid var(--line); border-radius: 10px;
@@ -84,7 +131,10 @@ dd > details[open] > summary { color: var(--ink); }
 @media (max-width: 680px) { .shots { grid-template-columns: 1fr; } }
 `;
 
-export function renderPage(overview: Overview, runs: RunSummary[]): string {
+export function renderPage(overview: Overview, runs: RunSummary[], token: string): string {
+  const rows = new Map<number, IssueRow>();
+  for (const group of overview.groups) for (const issue of group.issues) rows.set(issue.number, issue);
+
   return `<!doctype html>
 <html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -92,42 +142,111 @@ export function renderPage(overview: Overview, runs: RunSummary[]): string {
 <style>${CSS}</style></head>
 <body><div class="wrap">
   <h1>${esc(overview.target)}</h1>
-  <div class="sub">${esc(overview.repo)} · read-only view of <code>~/.feedback-loop</code></div>
+  <div class="sub">${esc(overview.repo)} · view of <code>~/.feedback-loop</code> and the GitHub queue · click a number to list it</div>
 
   <div class="stats">
-    ${stat(overview.fromChat, "from chat")}
-    ${stat(overview.agentReady, "agent-ready")}
-    ${stat(overview.readyToFix, "reproduced")}
-    ${stat(overview.needsDecision, "need you")}
-    ${stat(overview.agentPrs.length, "open PRs")}
-    ${stat(`$${overview.spentToday.toFixed(2)}`, `spent today of $${overview.dailyBudgetUsd}`)}
+    ${overview.groups.map((g) => groupTile(g.key, g.issues.length, g.label)).join("")}
+    ${groupTile("prs", overview.agentPrs.length, "open PRs")}
+    <div class="stat"><b>$${overview.spentToday.toFixed(2)}</b><span>spent today of $${esc(String(overview.dailyBudgetUsd))}</span></div>
   </div>
 
+  ${overview.groups.map((g) => `<section class="group card" id="g-${esc(g.key)}" hidden>
+    ${g.issues.map((issue) => renderIssue(issue, overview)).join("")}
+  </section>`).join("")}
+  <section class="group card" id="g-prs" hidden>
+    ${overview.agentPrs.map((pr) => `<div class="issue"><span class="title"><a href="${esc(pr.url)}" target="_blank" rel="noopener">#${pr.number}</a> ${esc(pr.title)}</span></div>`).join("")}
+  </section>
+
   ${overview.running.length > 0 ? `<h2>Running now</h2><div class="card">${overview.running
-    .map((r) => `<div>🔧 <b>${esc(r.what)}</b> <span class="num">since ${esc(r.at.slice(11, 16))} UTC</span></div>`)
+    .map((r) => `<div class="issue"><span class="title">🔧 <b>${esc(r.what)}</b> <span class="num">since ${esc(r.at.slice(11, 16))} UTC</span></span>
+      ${r.issue ? `<div class="acts">${button("log", r.issue)}</div>` : ""}</div>`)
     .join("")}</div>` : ""}
 
   ${overview.agentPrs.length > 0 ? `<h2>Waiting on you</h2><div class="card">${overview.agentPrs
-    .map((pr) => `<div><a href="${esc(pr.url)}">#${pr.number}</a> ${esc(pr.title)}</div>`)
+    .map((pr) => `<div><a href="${esc(pr.url)}" target="_blank" rel="noopener">#${pr.number}</a> ${esc(pr.title)}</div>`)
     .join("")}</div>` : ""}
 
   <h2>Runs</h2>
-  ${runs.length === 0 ? '<p class="empty">No runs yet.</p>' : runs.map(renderRun).join("")}
-</div></body></html>`;
+  ${runs.length === 0 ? '<p class="empty">No runs yet.</p>' : runs.map((run) => renderRun(run, overview, rows)).join("")}
+</div>
+<dialog id="log"><header><b id="log-title">log</b><span class="num" id="log-state"></span><span class="grow"></span>
+  <button class="act" id="log-close">close</button></header><pre id="log-text"></pre></dialog>
+<script>const TOKEN = ${JSON.stringify(token)};${SCRIPT}</script>
+</body></html>`;
 }
 
-function renderRun(run: RunSummary): string {
+function groupTile(key: string, count: number, label: string): string {
+  return `<button class="stat" data-group="${esc(key)}" aria-expanded="false" aria-controls="g-${esc(key)}"${count === 0 ? " disabled" : ""}>
+    <b>${count}</b><span>${esc(label)}</span></button>`;
+}
+
+/**
+ * Which verbs to offer. The server re-checks every one against the same gates
+ * as chat — this only keeps buttons off rows where they would certainly be
+ * refused, so what is left on a row is what can actually be done to it.
+ */
+function actionsFor(issue: IssueRow, overview: Overview): string {
+  const has = (label: string): boolean => issue.labels.includes(label);
+  const live = issue.running !== null;
+  const buttons: string[] = [];
+  if (has(overview.labels.humanOwned)) {
+    buttons.push(button("back", issue.number));
+  } else {
+    const thin = has(overview.labels.needsInfo);
+    if (!has(overview.labels.agentReady)) buttons.push(button("ready", issue.number, { disabled: thin }));
+    if (overview.canRun) {
+      if (has(overview.labels.agentReady)) buttons.push(button("triage", issue.number, { disabled: live || thin, primary: !has(overview.labels.readyToFix) }));
+      if (has(overview.labels.readyToFix)) buttons.push(button("fix", issue.number, { disabled: live || thin, primary: true }));
+      buttons.push(button("go", issue.number, { disabled: live || thin }));
+    }
+    buttons.push(button("mine", issue.number, { disabled: live }));
+  }
+  if (issue.hasLog || live) buttons.push(button("log", issue.number));
+  return `<div class="acts">${buttons.join("")}</div>`;
+}
+
+const LABELS: Record<string, string> = {
+  ready: "ready", triage: "triage", fix: "fix", go: "go", mine: "hand off to me", back: "hand back", log: "log",
+};
+const TITLES: Record<string, string> = {
+  ready: "Clear it for an autonomous attempt (adds the agent-ready label)",
+  triage: "Reproduce and size it. Never edits code.",
+  fix: "Implement, review adversarially, open a PR. Never merges.",
+  go: "Clear, reproduce, fix and open a PR in one run",
+  mine: "Take it off the loop and set up a worktree for you",
+  back: "Give it back to the loop",
+  log: "Show the latest worker log",
+};
+
+function button(action: string, issue: number, opts: { disabled?: boolean; primary?: boolean } = {}): string {
+  return `<button class="act${opts.primary ? " primary" : ""}" data-action="${action}" data-issue="${issue}" title="${esc(TITLES[action] ?? action)}"${opts.disabled ? " disabled" : ""}>${esc(LABELS[action] ?? action)}</button>`;
+}
+
+function renderIssue(issue: IssueRow, overview: Overview): string {
+  const chips = issue.labels.map((l) => `<span class="chip">${esc(l)}</span>`).join("");
+  return `<div class="issue">
+    <span class="title"><a href="${esc(issue.url)}" target="_blank" rel="noopener"><b>#${issue.number}</b></a> ${esc(issue.title)}
+      ${issue.running ? `<span class="tag ok">${esc(issue.running)}</span>` : ""}
+      <span class="chips">${chips}</span></span>
+    ${actionsFor(issue, overview)}
+  </div>`;
+}
+
+function renderRun(run: RunSummary, overview: Overview, rows: Map<number, IssueRow>): string {
   const outcome = outcomeOf(run);
   const shots = run.evidence.filter((e) => !e.single);
+  const row = run.issue ? rows.get(run.issue) : undefined;
   return `<details class="run"${shots.length > 0 ? " open" : ""}>
   <summary>
     <b>${run.issue ? `#${run.issue}` : run.id}</b>
+    ${row ? `<span>${esc(row.title)}</span>` : ""}
     <span class="tag">${esc(run.kind)}</span>
     <span class="tag ${outcome.className}">${esc(outcome.label)}</span>
     <span class="grow"></span>
     <span class="num">${run.at.toISOString().slice(5, 16).replace("T", " ")} · $${run.costUsd.toFixed(2)} · ${run.phases.reduce((n, p) => n + p.turns, 0)} turns</span>
   </summary>
   <div class="run-body">
+    ${run.issue ? `<div class="run-acts">${row ? actionsFor(row, overview) : `<div class="acts">${button("log", run.issue)}</div>`}</div>` : ""}
     ${shots.length > 0 ? shots.map((e) => renderPair(run, e)).join("") : ""}
     ${run.phases.map((p) => renderPhase(run, p)).join("")}
     ${run.attachments.length > 0 ? `<h2>Attachments</h2><ul class="files">${run.attachments
@@ -137,6 +256,105 @@ function renderRun(run: RunSummary): string {
   </div>
 </details>`;
 }
+
+/**
+ * Plain script, no framework. Which group is open lives in the URL hash so the
+ * reload after a button press lands where you were.
+ */
+const SCRIPT = `
+const $ = (s) => document.querySelector(s);
+function openGroup(key) {
+  document.querySelectorAll("button.stat[data-group]").forEach((b) => {
+    const on = b.dataset.group === key;
+    b.setAttribute("aria-expanded", String(on));
+    document.getElementById("g-" + b.dataset.group).hidden = !on;
+  });
+  history.replaceState(null, "", key ? "#g=" + key : location.pathname);
+}
+document.querySelectorAll("button.stat[data-group]").forEach((b) => b.addEventListener("click", () =>
+  openGroup(b.getAttribute("aria-expanded") === "true" ? null : b.dataset.group)));
+function fromHash() {
+  const m = /^#g=([\\w-]+)$/.exec(location.hash);
+  if (m && document.getElementById("g-" + m[1])) openGroup(m[1]);
+}
+fromHash();
+addEventListener("hashchange", fromHash);
+
+let toastTimer;
+function toast(text, bad) {
+  let t = $(".toast");
+  if (!t) { t = document.createElement("div"); document.body.append(t); }
+  t.className = "toast" + (bad ? " bad" : "");
+  t.textContent = text;
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => t.remove(), bad ? 9000 : 4000);
+}
+
+const CONFIRM = {
+  triage: "Start triage on #N? It runs an agent and spends budget.",
+  fix: "Start a fix on #N? It runs an agent, spends budget and opens a PR.",
+  go: "Clear, triage and fix #N in one run? It spends budget and opens a PR.",
+  mine: "Take #N off the loop and set up a worktree for yourself?",
+};
+
+let logTimer;
+let logFor = 0;
+async function showLog(issue) {
+  const dialog = $("#log");
+  $("#log-title").textContent = "#" + issue;
+  const token = ++logFor;
+  const load = async () => {
+    let body;
+    try {
+      const res = await fetch("/api/log?issue=" + issue, { headers: { "x-feedback-loop-token": TOKEN } });
+      body = await res.json();
+    } catch (error) {
+      body = { ok: false, message: "Couldn't load the log: " + error };
+    }
+    // A slow answer for the log that was open before this one.
+    if (token !== logFor || !dialog.open) return;
+    const pre = $("#log-text");
+    const atBottom = pre.scrollTop + pre.clientHeight >= pre.scrollHeight - 8;
+    pre.textContent = body.ok ? body.text : body.message;
+    $("#log-state").textContent = body.ok ? (body.running ? "live · refreshing" : body.path) : "";
+    if (atBottom) pre.scrollTop = pre.scrollHeight;
+    clearTimeout(logTimer);
+    if (body.ok && body.running && dialog.open) logTimer = setTimeout(load, 3000);
+  };
+  if (!dialog.open) dialog.showModal();
+  $("#log-text").textContent = "loading…";
+  await load();
+}
+$("#log-close").addEventListener("click", () => $("#log").close());
+$("#log").addEventListener("close", () => clearTimeout(logTimer));
+
+document.addEventListener("click", async (event) => {
+  const b = event.target.closest("button.act[data-action]");
+  if (!b || b.disabled) return;
+  const action = b.dataset.action;
+  const issue = Number(b.dataset.issue);
+  if (action === "log") return showLog(issue);
+  if (CONFIRM[action] && !confirm(CONFIRM[action].replace("#N", "#" + issue))) return;
+  const siblings = [...b.parentElement.querySelectorAll("button.act")].filter((s) => !s.disabled);
+  siblings.forEach((s) => (s.disabled = true));
+  const label = b.textContent;
+  b.textContent = "…";
+  try {
+    const res = await fetch("/api/action", {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-feedback-loop-token": TOKEN },
+      body: JSON.stringify({ action, issue }),
+    });
+    const body = await res.json().catch(() => ({ ok: false, message: "HTTP " + res.status }));
+    toast(body.message, !body.ok);
+    if (body.ok) return setTimeout(() => location.reload(), 1500);
+  } catch (error) {
+    toast(String(error), true);
+  }
+  b.textContent = label;
+  siblings.forEach((s) => (s.disabled = false));
+});
+`;
 
 function renderPhase(run: RunSummary, phase: { name: string; verdict: Record<string, unknown> | null; costUsd: number; turns: number; sessionId: string | null }): string {
   const rows = phase.verdict
@@ -181,10 +399,6 @@ function outcomeOf(run: RunSummary): { label: string; className: string } {
   if (v.reproduced === true) return { label: "reproduced", className: "ok" };
   if (v.implemented === true) return { label: "implemented", className: "ok" };
   return { label: "not reproduced", className: "warnc" };
-}
-
-function stat(value: string | number, label: string): string {
-  return `<div class="stat"><b>${esc(String(value))}</b><span>${esc(label)}</span></div>`;
 }
 
 function esc(s: string): string {

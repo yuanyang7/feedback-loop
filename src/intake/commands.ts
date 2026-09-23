@@ -198,7 +198,7 @@ export function startWorker(
   target: string,
   repoDir: string,
   command: { kind: "triage" | "fix" | "go"; issue: number },
-  announceChannel: string,
+  announceChannel: string | null,
   announceMessage: string | null,
 ): { pid: number; logPath: string } {
   const logPath = join(stateDir(target), `worker-${command.kind}-${command.issue}.log`);
@@ -211,8 +211,10 @@ export function startWorker(
     [
       launcher, command.kind, repoDir,
       "--issue", String(command.issue),
-      "--announce", announceChannel,
-      ...(announceMessage ? ["--announce-message", announceMessage] : []),
+      // Null for a run started from the dashboard: whoever clicked is looking
+      // at the page, and a channel post would be news to nobody.
+      ...(announceChannel ? ["--announce", announceChannel] : []),
+      ...(announceChannel && announceMessage ? ["--announce-message", announceMessage] : []),
     ],
     { detached: true, stdio: ["ignore", log, log] },
   );

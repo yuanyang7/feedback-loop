@@ -58,7 +58,10 @@ const DRAINED_PATTERN = /<!--\s*feedback-loop:drained:v1\s*-->/;
 export interface RunRequest {
   issue: number;
   kind: "triage" | "fix" | "go";
-  /** Discord channel the answer belongs in. */
+  /**
+   * Discord channel the answer belongs in. Empty for a request made from the
+   * dashboard: whoever clicked is watching the page, not the channel.
+   */
   channel: string;
   /**
    * The "queued" notice. Handed to the run when it finally starts so it edits

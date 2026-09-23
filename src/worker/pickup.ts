@@ -95,7 +95,7 @@ export async function pickUpWork(
     await github.addLabels(issue.number, ["in-progress"]);
     await dropRequest(github, config, issue.number, `▶️ Starting \`${request.kind}\`.`);
     const { pid } = startWorker(
-      target, repoPath, { kind: request.kind, issue: issue.number }, request.channel, request.message,
+      target, repoPath, { kind: request.kind, issue: issue.number }, request.channel || null, request.message,
     );
     claimRun(target, pid, `${request.kind} #${issue.number}`, issue.number);
     info(`  ${bold(`started queued ${request.kind} #${issue.number}`)} ${cyan(issue.title)} ${dim(`pid ${pid}`)}`);

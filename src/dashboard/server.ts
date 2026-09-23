@@ -1,18 +1,23 @@
 /**
- * A local, read-only page over the runs directory.
+ * A local page over the runs directory and the GitHub queue.
  *
- * It exists for the one thing a terminal cannot do: put a before and an after
- * screenshot side by side. Everything else it shows is also in `status`.
+ * It exists for what a terminal cannot do: put a before and an after
+ * screenshot side by side, and show every issue in a group with the commands
+ * that apply to it one click away. The buttons are chat commands by another
+ * route — `actions.ts` holds them to the same gates.
  */
+import { randomBytes } from "node:crypto";
 import { createReadStream, existsSync, statSync } from "node:fs";
-import { createServer } from "node:http";
+import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { extname, join, normalize, resolve } from "node:path";
-import { readSecret, type LoadedConfig } from "../core/config.js";
+import { readSecret, resolveRole, type LoadedConfig } from "../core/config.js";
 import { bold, cyan, dim, info } from "../core/log.js";
 import { readRunLog, runsDir } from "../core/state.js";
 import { activeRuns } from "../intake/commands.js";
-import { GitHubClient } from "../intake/github.js";
-import { renderPage, type Overview } from "./render.js";
+import { GitHubClient, type Issue } from "../intake/github.js";
+import { HUMAN_OWNED } from "../worker/handoff.js";
+import { isAction, latestLog, readLogTail, runAction } from "./actions.js";
+import { renderPage, type IssueRow, type Overview } from "./render.js";
 import { scanRuns } from "./scan.js";
 
 const TYPES: Record<string, string> = {
@@ -26,11 +31,28 @@ export async function serveDashboard(loaded: LoadedConfig, port: number): Promis
   const { config } = loaded;
   const target = config.target.name;
   const root = resolve(runsDir(target));
+  // Per process, and only ever written into the page this server renders. A
+  // page on another origin can send a simple POST here but cannot set a custom
+  // header without a preflight we never answer, and cannot read this token.
+  const token = randomBytes(18).toString("hex");
+  const hosts = new Set([`localhost:${port}`, `127.0.0.1:${port}`]);
 
   const server = createServer((req, res) => {
     void (async () => {
       const url = new URL(req.url ?? "/", `http://localhost:${port}`);
 
+      // DNS rebinding: a hostile name that resolves to 127.0.0.1 would be
+      // same-origin with this page, able to read the token and press buttons.
+      if (!hosts.has(req.headers.host ?? "")) {
+        res.writeHead(421).end("wrong host");
+        return;
+      }
+      if (url.pathname === "/api/action") {
+        return handleAction(loaded, token, req, res);
+      }
+      if (url.pathname === "/api/log") {
+        return handleLog(target, token, req, url, res);
+      }
       if (url.pathname.startsWith("/evidence/")) {
         return serveEvidence(root, url.pathname, res);
       }
@@ -41,8 +63,14 @@ export async function serveDashboard(loaded: LoadedConfig, port: number): Promis
 
       try {
         const overview = await buildOverview(loaded);
-        const html = renderPage(overview, scanRuns(target));
-        res.writeHead(200, { "content-type": "text/html; charset=utf-8" }).end(html);
+        const html = renderPage(overview, scanRuns(target), token);
+        res.writeHead(200, {
+          "content-type": "text/html; charset=utf-8",
+          // The buttons are the reason: framed by another site, a click on
+          // "ready" there would be a click on this page.
+          "content-security-policy": "frame-ancestors 'none'",
+          "x-frame-options": "DENY",
+        }).end(html);
       } catch (error) {
         res
           .writeHead(500, { "content-type": "text/plain; charset=utf-8" })
@@ -56,12 +84,61 @@ export async function serveDashboard(loaded: LoadedConfig, port: number): Promis
   await new Promise(() => {}); // serve until interrupted
 }
 
+function json(res: ServerResponse, status: number, body: unknown): void {
+  res.writeHead(status, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" })
+    .end(JSON.stringify(body));
+}
+
+function authorised(req: IncomingMessage, token: string): boolean {
+  return req.headers["x-feedback-loop-token"] === token;
+}
+
+async function handleAction(loaded: LoadedConfig, token: string, req: IncomingMessage, res: ServerResponse): Promise<void> {
+  if (req.method !== "POST") return json(res, 405, { ok: false, message: "POST only" });
+  if (!authorised(req, token)) return json(res, 403, { ok: false, message: "Reload the page — its token is stale." });
+
+  let body: { action?: unknown; issue?: unknown };
+  try {
+    const chunks: Buffer[] = [];
+    let size = 0;
+    for await (const chunk of req) {
+      size += (chunk as Buffer).length;
+      if (size > 4096) return json(res, 413, { ok: false, message: "too large" });
+      chunks.push(chunk as Buffer);
+    }
+    body = JSON.parse(Buffer.concat(chunks).toString("utf8")) as typeof body;
+  } catch {
+    return json(res, 400, { ok: false, message: "bad JSON" });
+  }
+
+  const issue = Number(body.issue);
+  if (!isAction(body.action) || !Number.isInteger(issue) || issue <= 0) {
+    return json(res, 400, { ok: false, message: "unknown action or issue" });
+  }
+  try {
+    info(`${bold("dashboard")} ${body.action} #${issue}`);
+    return json(res, 200, await runAction(loaded, body.action, issue));
+  } catch (error) {
+    return json(res, 500, { ok: false, message: error instanceof Error ? error.message : String(error) });
+  }
+}
+
+function handleLog(target: string, token: string, req: IncomingMessage, url: URL, res: ServerResponse): void {
+  if (!authorised(req, token)) return json(res, 403, { ok: false, message: "Reload the page — its token is stale." });
+  const issue = Number(url.searchParams.get("issue"));
+  if (!Number.isInteger(issue) || issue <= 0) return json(res, 400, { ok: false, message: "bad issue" });
+  const path = latestLog(target, issue);
+  if (!path) return json(res, 404, { ok: false, message: `No worker log for #${issue} yet.` });
+  const running = activeRuns(target).some((r) => r.issue === issue);
+  return json(res, 200, { ok: true, path, running, text: readLogTail(path) });
+}
+
 /**
  * Evidence is served straight off disk, so the path has to be pinned inside the
  * runs directory: a page that renders whatever a URL names would happily read
  * the rest of the filesystem.
  */
-function serveEvidence(root: string, pathname: string, res: import("node:http").ServerResponse): void {
+function serveEvidence(root: string, pathname: string, res: ServerResponse): void {
   const parts = pathname.slice("/evidence/".length).split("/").map(decodeURIComponent);
   if (parts.length !== 2) {
     res.writeHead(400).end("bad path");
@@ -87,13 +164,25 @@ async function buildOverview(loaded: LoadedConfig): Promise<Overview> {
     config.github.tokenFile ? readSecret(config.github.tokenFile, "GITHUB_TOKEN") : undefined,
   );
 
-  const [fromChat, agentReady, readyToFix, needsDecision, prs] = await Promise.all([
+  const [fromChat, agentReady, readyToFix, needsDecision, runFailed, queued, humanOwned, prs] = await Promise.all([
     github.listIssues({ labels: [labels.source], state: "open" }),
     github.listIssues({ labels: [labels.agentReady], state: "open" }),
     github.listIssues({ labels: [labels.readyToFix], state: "open" }),
     github.listIssues({ labels: [labels.needsDecision], state: "open" }),
+    github.listIssues({ labels: [labels.runFailed], state: "open" }),
+    github.listIssues({ labels: [labels.requested], state: "open" }),
+    github.listIssues({ labels: [HUMAN_OWNED], state: "open" }),
     github.listPullRequests({ state: "open" }),
   ]);
+  const running = activeRuns(config.target.name);
+  const row = (issue: Issue): IssueRow => ({
+    number: issue.number,
+    title: issue.title,
+    url: issue.url,
+    labels: issue.labels.map((l) => l.name),
+    running: running.find((r) => r.issue === issue.number)?.what ?? null,
+    hasLog: latestLog(config.target.name, issue.number) !== null,
+  });
 
   const today = new Date().toISOString().slice(0, 10);
   const spentToday = readRunLog(config.target.name, 500)
@@ -103,14 +192,27 @@ async function buildOverview(loaded: LoadedConfig): Promise<Overview> {
   return {
     target: config.target.name,
     repo: config.target.repo,
-    fromChat: fromChat.length,
-    agentReady: agentReady.length,
-    readyToFix: readyToFix.length,
-    needsDecision: needsDecision.length,
+    labels: {
+      agentReady: labels.agentReady,
+      readyToFix: labels.readyToFix,
+      needsInfo: labels.needsInfo,
+      humanOwned: HUMAN_OWNED,
+    },
+    // Order is the order the tiles appear in: what wants a person first.
+    groups: [
+      { key: "need-you", label: "need you", issues: needsDecision.map(row) },
+      { key: "run-failed", label: "run failed", issues: runFailed.map(row) },
+      { key: "reproduced", label: "reproduced", issues: readyToFix.map(row) },
+      { key: "agent-ready", label: "agent-ready", issues: agentReady.map(row) },
+      { key: "queued", label: "queued", issues: queued.map(row) },
+      { key: "handed-off", label: "handed off", issues: humanOwned.map(row) },
+      { key: "from-chat", label: "from chat", issues: fromChat.map(row) },
+    ],
+    canRun: loaded.repoPath !== null || resolveRole(config) === "intake",
     agentPrs: prs
       .filter((pr) => (pr.labels ?? []).some((l) => l.name === labels.agentPr))
       .map((pr) => ({ number: pr.number, url: pr.url, title: pr.title })),
-    running: activeRuns(config.target.name).map((r) => ({ what: r.what, at: r.at })),
+    running: running.map((r) => ({ what: r.what, at: r.at, issue: r.issue ?? null })),
     spentToday,
     dailyBudgetUsd: config.worker.dailyBudgetUsd,
   };

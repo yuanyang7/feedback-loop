@@ -137,9 +137,13 @@ that justify a fix. So the dashboard is scoped to exactly that gap.
 
 - **`feedback-loop status`** — one screen: queue counts, active run + current phase, today's spend,
   last 10 runs with outcomes. This is the real interface and comes first.
-- **`feedback-loop dashboard`** — a local read-only page on `localhost:7777`, regenerated from the
-  run log. Adds what a terminal can't do: inline before/after screenshots, the repro evidence, the
-  adversarial review findings, and a link straight to the PR. No auth, no cloud, no database.
+- **`feedback-loop dashboard`** — a local page on `localhost:7777`, regenerated from the run log.
+  Adds what a terminal can't do: inline before/after screenshots, the repro evidence, the
+  adversarial review findings, and a link straight to the PR. Each queue count opens its issues,
+  and each issue has the chat verbs as buttons — the same closed set, gates and queue, so the page
+  is another front door rather than a second policy. No cloud, no database; the only auth is a
+  per-process token baked into the page plus a `Host` check, which is what stops another browser
+  tab (or a rebinding DNS name) from pressing the buttons.
 
 Run artifacts live at `~/.feedback-loop/runs/<run-id>/` — transcript, evidence, screenshots, cost,
 final status. The PR body links back to the dashboard; the dashboard serves the images.

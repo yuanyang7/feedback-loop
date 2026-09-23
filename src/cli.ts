@@ -33,7 +33,7 @@ Usage:
   feedback-loop handoff [dir] --issue N  Take one issue off the loop and work on it yourself
   feedback-loop queue [dir]           What runs next, in order, and what is held back
   feedback-loop status [dir]          Queue counts, recent runs, and caps
-  feedback-loop dashboard [dir]       Local page: runs, verdicts, before/after screenshots
+  feedback-loop dashboard [dir]       Local page: queue groups with command buttons, runs, screenshots
   feedback-loop watch [dir] --issue N Follow a running phase as it happens
   feedback-loop labels [dir]          Create the labels this tool expects
 

@@ -29,7 +29,7 @@ See [DESIGN.md](DESIGN.md) § 8 for the build order and why fixing came last.
 | ✅ | `triage` — reproduce + size, never edits source |
 | ✅ | `fix` — implement → adversarial review → PR, never merges |
 | ✅ | `go` — the whole chain in one command |
-| ✅ | `dashboard` — local page pairing before/after screenshots with each run's verdict |
+| ✅ | `dashboard` — local page pairing before/after screenshots with each run's verdict, with per-issue command buttons |
 
 ## Setup
 
@@ -103,9 +103,13 @@ include recent history.
 feedback-loop dashboard /path/to/your/repo    # http://localhost:7777
 ```
 
-Read-only, derived entirely from `~/.feedback-loop` — it holds no state of its own, so it cannot
-disagree with the artifacts it describes. It exists for the one thing a terminal cannot do: put a
-before and an after screenshot side by side. `status` covers everything else.
+Derived entirely from `~/.feedback-loop` and the GitHub labels — it holds no state of its own, so it
+cannot disagree with the artifacts it describes. It puts a before and an after screenshot side by
+side, and each count at the top (need you, reproduced, agent-ready, handed off, …) opens the list of
+issues behind it. Every issue carries the chat commands that apply to it as buttons — `ready`,
+`triage`, `fix`, `go`, hand off / hand back — plus its latest worker log. The buttons go through the
+same gates, concurrency limit and queue as the chat commands, and only the page the server rendered
+can press them (a per-process token, and requests for any other `Host` are refused).
 
 Schedule `tick` however you like — launchd, cron, a loop. It is idempotent and cheap.
 
