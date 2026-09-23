@@ -99,7 +99,10 @@ function readRun(root: string, id: string): RunSummary {
     at: parseStamp(id),
     phases,
     evidence: pairEvidence(evidenceFiles.filter((f) => IMAGE.test(f))),
-    attachments: evidenceFiles.filter((f) => !IMAGE.test(f) && f !== "README.txt"),
+    // Files only: a directory such as repro/ is not something the page can serve.
+    attachments: evidenceFiles.filter(
+      (f) => !IMAGE.test(f) && f !== "README.txt" && statSync(join(evidenceDir, f)).isFile(),
+    ),
     readme: existsSync(join(evidenceDir, "README.txt"))
       ? readFileSync(join(evidenceDir, "README.txt"), "utf8")
       : null,

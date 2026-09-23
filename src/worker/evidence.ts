@@ -88,3 +88,43 @@ function uniqueName(dir: string, name: string): string {
     if (!existsSync(join(dir, candidate))) return candidate;
   }
 }
+
+/**
+ * Triage already worked out how to put the app into the broken state — the
+ * data to seed, the screen to drive to. Saved as scripts, the fix phase can
+ * rerun that in a minute instead of rewriting it from the notes, which was
+ * where most of a fix's wall clock went.
+ */
+export function reproInstruction(dir: string): string {
+  return `If reproducing needed any setup — seeding or changing data, a Playwright script, idb or simctl
+commands to reach a screen — save each as a runnable script in:
+
+    ${join(dir, "repro")}
+
+with a README.md saying what to run, in what order, and what it expects (a lab database URL, a port,
+a booted Simulator). Parameterise anything specific to this worktree, such as the database URL or
+port, as an environment variable rather than hard-coding it. The fix phase reruns these for its
+before and after captures instead of writing them again.`;
+}
+
+/** The latest triage run's repro scripts for an issue, if it saved any. */
+export function findReproDir(runsRoot: string, issueNumber: number): string | null {
+  if (!existsSync(runsRoot)) return null;
+  const marker = `-issue-${issueNumber}-`;
+  for (const run of readdirSync(runsRoot).filter((d) => d.includes(marker) && !d.includes("-fix-")).sort().reverse()) {
+    const dir = join(runsRoot, run, "evidence", "repro");
+    if (existsSync(dir) && readdirSync(dir).length > 0) return dir;
+  }
+  return null;
+}
+
+export function reuseReproInstruction(dir: string | null): string {
+  if (!dir) return "";
+  return `Triage saved the scripts that reproduce this bug in:
+
+    ${dir}
+
+Read its README.md and rerun them — to confirm the bug before your change and to capture the after
+state — rather than writing new ones. Adapt them if they no longer fit; do not start from scratch.
+`;
+}

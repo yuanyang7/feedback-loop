@@ -23,7 +23,7 @@ import { checkGate } from "./gate.js";
 import { runPhase } from "./agent.js";
 import { ensureWorktree, slugForIssue, type Worktree } from "./worktree.js";
 import { attachmentInstruction, savedAttachments } from "../intake/attachments.js";
-import { evidenceDir, evidenceInstruction, hasImages, listEvidence, sweepWorktree, touchesUi } from "./evidence.js";
+import { evidenceDir, evidenceInstruction, findReproDir, hasImages, listEvidence, reuseReproInstruction, sweepWorktree, touchesUi } from "./evidence.js";
 import { announce, announcer, firstSentence } from "./announce.js";
 import { findingsFrom, parseCiFailure, renderCiFailure } from "./ci.js";
 import { shareEvidence } from "./share.js";
@@ -87,6 +87,7 @@ const FIX_PROMPT = (
   previous: Fix | null,
   attachments: string[] = [],
   leftover = "",
+  repro = "",
 ) => {
   const retry =
     previousFindings.length === 0
@@ -114,7 +115,7 @@ const FIX_PROMPT = (
 
   return `Fix the bug below. It has already been reproduced — the triage notes say how.
 
-${retry}${leftover}Work in this worktree, on its existing branch. When the fix is done:
+${retry}${leftover}${repro}Work in this worktree, on its existing branch. When the fix is done:
 
 1. Confirm the reported problem is actually gone — drive the same interaction that reproduced it.
    Green tests prove nothing else broke; they do not prove this is fixed.
@@ -397,6 +398,7 @@ async function runFixInner(
           issue, triageNotes, config.worker.denyPaths, findings, evidence, previousFix, savedAttachments(target, issue.number),
           // Only the first attempt: later ones continue this run's own commit.
           previousFix ? "" : leftover,
+          reuseReproInstruction(findReproDir(runsDir(target), issue.number)),
         ),
         decisions,
       ),

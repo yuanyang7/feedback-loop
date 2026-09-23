@@ -21,7 +21,7 @@ import { checkGate } from "./gate.js";
 import { runPhase } from "./agent.js";
 import { ensureWorktree, isUntouched, removeWorktree, slugForIssue } from "./worktree.js";
 import { attachmentInstruction, savedAttachments } from "../intake/attachments.js";
-import { evidenceDir, evidenceInstruction, listEvidence, sweepWorktree } from "./evidence.js";
+import { evidenceDir, evidenceInstruction, reproInstruction, listEvidence, sweepWorktree } from "./evidence.js";
 import { announce, firstSentence } from "./announce.js";
 import { shareEvidence } from "./share.js";
 
@@ -83,6 +83,8 @@ Do not edit, create, or delete any source file. You may write scratch scripts fo
 but the worktree must end this session with a clean \`git status\`.
 
 ${evidenceInstruction(evidencePath)}
+
+${reproInstruction(evidencePath)}
 ${attachmentInstruction(attachments)}
 
 Flag blockedReason as "deny-path" if a fix would touch any of these:
