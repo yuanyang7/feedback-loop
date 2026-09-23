@@ -47,6 +47,12 @@ Options:
   --return         handoff: give the issue back to the loop
   --announce ID    triage/fix: post the result to this Discord channel when done
   --port N         dashboard: listen on this port (default 7777)
+  --host ADDR      dashboard: bind here instead of 127.0.0.1. For a private
+                   network you control — a tailnet — name that interface's
+                   address, not 0.0.0.0. The page has no login.
+                   "tailscale" finds this machine's tailnet address itself.
+  --allow-host H   dashboard: also accept this Host: value, e.g. a MagicDNS
+                   name. Repeatable.
   --config PATH    Load this config file instead of finding one in a repo.
                    For a host that has no checkout and does not want one.
                    Also read from FEEDBACK_LOOP_CONFIG.
@@ -65,7 +71,7 @@ async function main(): Promise<number> {
   const argv = process.argv.slice(2);
   const command = argv[0];
   const flags = new Set(argv.filter((a) => a.startsWith("--")));
-  const valueFlags = new Set(["--backfill", "--issue", "--announce", "--announce-message", "--port", "--config", "--role"]);
+  const valueFlags = new Set(["--backfill", "--issue", "--announce", "--announce-message", "--port", "--config", "--role", "--host", "--allow-host"]);
   const positional = argv.slice(1).filter((a, i) => {
     if (a.startsWith("--")) return false;
     const previous = argv.slice(1)[i - 1];
@@ -232,32 +238,16 @@ async function main(): Promise<number> {
       return status(load());
     case "dashboard": {
       const p = argv.indexOf("--port");
-      await serveDashboard(load(), p >= 0 ? Number(argv[p + 1]) : 7777);
-      return 0;
-    }
-    case "watch": {
-      const loaded = loadConfig(dir);
-      const at = argv.indexOf("--issue");
-      const n = at >= 0 ? Number(argv[at + 1]) : NaN;
-      if (!Number.isInteger(n) || n <= 0) {
-        fail("watch needs --issue N.");
-        return 1;
-      }
-      const repo = requireRepo(loaded);
-      const worktrees = join(repo, ".worktrees");
-      const dirs = existsSync(worktrees)
-        ? readdirSync(worktrees).filter((d: string) => d.startsWith(`issue-${n}-`))
-        : [];
-      if (dirs.length === 0) {
-        fail(`No worktree for #${n} — nothing has run on it yet.`);
-        return 1;
-      }
-      // A finished run is still worth reading back, so say which case this is
-      // rather than refusing when nothing is live.
-      if (!activeRuns(loaded.config.target.name).some((r) => r.issue === n)) {
-        warn(`No live run on #${n} — showing the last session in its worktree.`);
-      }
-      await watchRun(join(worktrees, dirs[0]!));
+      const h = argv.indexOf("--host");
+      // Every --allow-host, not just the first: a machine is often reachable
+      // by more than one name, and being told "wrong host" with no hint of
+      // which one it wanted is a bad ten minutes.
+      const allowHosts = argv.flatMap((a, i) => (a === "--allow-host" ? [argv[i + 1]] : [])).filter((v): v is string => !!v);
+      await serveDashboard(load(), {
+        port: p >= 0 ? Number(argv[p + 1]) : 7777,
+        host: h >= 0 ? argv[h + 1] : undefined,
+        allowHosts,
+      });
       return 0;
     }
     case "labels":

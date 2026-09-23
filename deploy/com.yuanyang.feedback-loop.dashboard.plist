@@ -1,0 +1,49 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.yuanyang.feedback-loop.dashboard</string>
+
+  <!-- Bound to the tailnet address, not 0.0.0.0. The page has no login, so
+       the network is the access control: on the tailnet it is reachable from
+       your own devices and from nothing else — not from whatever wifi this
+       laptop is also on. The server resolves the address itself and waits if
+       Tailscale is not up yet, so this job may start before it. -->
+  <key>ProgramArguments</key>
+  <array>
+    <string>/opt/homebrew/bin/feedback-loop</string>
+    <string>dashboard</string>
+    <string>/Users/yangyuan/code/vibe-code-app-store</string>
+    <string>--host</string>
+    <string>tailscale</string>
+    <string>--port</string>
+    <string>7777</string>
+  </array>
+
+  <key>RunAtLoad</key>
+  <true/>
+  <!-- It is a server: if it exits, it should come back. -->
+  <key>KeepAlive</key>
+  <true/>
+
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>/opt/homebrew/bin:/opt/homebrew/sbin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    <key>HOME</key>
+    <string>/Users/yangyuan</string>
+  </dict>
+
+  <key>WorkingDirectory</key>
+  <string>/Users/yangyuan/code/vibe-code-app-store</string>
+
+  <key>StandardOutPath</key>
+  <string>/Users/yangyuan/.feedback-loop/vibeplat/dashboard.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/yangyuan/.feedback-loop/vibeplat/dashboard.log</string>
+
+  <key>ProcessType</key>
+  <string>Background</string>
+</dict>
+</plist>

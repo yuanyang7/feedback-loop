@@ -9,9 +9,10 @@
 import { randomBytes } from "node:crypto";
 import { createReadStream, existsSync, readdirSync, statSync } from "node:fs";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
+import { networkInterfaces } from "node:os";
 import { extname, join, normalize, resolve } from "node:path";
 import { readSecret, resolveRole, type LoadedConfig } from "../core/config.js";
-import { bold, cyan, dim, info } from "../core/log.js";
+import { bold, cyan, dim, info, warn } from "../core/log.js";
 import { readRunLog, runsDir } from "../core/state.js";
 import { activeRuns } from "../intake/commands.js";
 import { GitHubClient, type Issue } from "../intake/github.js";
@@ -27,15 +28,80 @@ const TYPES: Record<string, string> = {
   ".mjs": "text/plain; charset=utf-8", ".patch": "text/plain; charset=utf-8",
 };
 
-export async function serveDashboard(loaded: LoadedConfig, port: number): Promise<void> {
+export interface DashboardOptions {
+  port: number;
+  /**
+   * Address to bind. Loopback by default, which is the only safe default:
+   * this page has no login, and whoever can reach the port can read the
+   * token out of the HTML and press the buttons that comment on issues and
+   * clear the gate.
+   *
+   * Binding wider is for exactly one case — a private network you control,
+   * such as a tailnet — and then the right value is that interface's address,
+   * not 0.0.0.0. Bound to the tailnet address, the page is unreachable from
+   * whatever café wifi the laptop is also on; bound to 0.0.0.0 it is not.
+   */
+  host?: string;
+  /**
+   * Extra `Host:` values to accept, for reaching it by name rather than by
+   * address — a MagicDNS name, say. The bind address is accepted already.
+   */
+  allowHosts?: string[];
+}
+
+/**
+ * The machine's address on the tailnet, if it is up.
+ *
+ * Read from the interfaces rather than by shelling out to `tailscale`, which
+ * lives in different places depending on how it was installed and is not on
+ * a launchd job's PATH either way. Tailscale assigns out of 100.64.0.0/10,
+ * the carrier-grade NAT range, and nothing else on a normal machine uses it.
+ */
+function tailnetAddress(): string | null {
+  for (const addresses of Object.values(networkInterfaces())) {
+    for (const address of addresses ?? []) {
+      if (address.family !== "IPv4" || address.internal) continue;
+      const [a, b] = address.address.split(".").map(Number);
+      if (a === 100 && b !== undefined && b >= 64 && b <= 127) return address.address;
+    }
+  }
+  return null;
+}
+
+export async function serveDashboard(loaded: LoadedConfig, opts: DashboardOptions): Promise<void> {
   const { config } = loaded;
+  const { port } = opts;
+  // `--host tailscale` rather than a literal address, so a launchd job does
+  // not hardcode something that changes when the tailnet is reset — and so
+  // the plist reads as the intent instead of as a number.
+  let host = opts.host ?? "127.0.0.1";
+  if (host === "tailscale") {
+    for (;;) {
+      const found = tailnetAddress();
+      if (found) {
+        host = found;
+        break;
+      }
+      warn("waiting for a tailnet address — is Tailscale running?");
+      await new Promise((r) => setTimeout(r, 10_000));
+    }
+  }
   const target = config.target.name;
   const root = resolve(runsDir(target));
   // Per process, and only ever written into the page this server renders. A
   // page on another origin can send a simple POST here but cannot set a custom
   // header without a preflight we never answer, and cannot read this token.
   const token = randomBytes(18).toString("hex");
-  const hosts = new Set([`localhost:${port}`, `127.0.0.1:${port}`]);
+  // The guard stays meaningful when the bind address widens: it is still a
+  // closed list, just one that now includes however you reach this machine.
+  const hosts = new Set([
+    `localhost:${port}`,
+    `127.0.0.1:${port}`,
+    `${host}:${port}`,
+    // An IPv6 literal has to be bracketed in a Host header.
+    ...(host.includes(":") ? [`[${host}]:${port}`] : []),
+    ...(opts.allowHosts ?? []).map((h) => (h.includes(":") && !h.startsWith("[") ? h : `${h}:${port}`)),
+  ]);
 
   const server = createServer((req, res) => {
     void (async () => {
@@ -88,8 +154,36 @@ export async function serveDashboard(loaded: LoadedConfig, port: number): Promis
     })();
   });
 
-  await new Promise<void>((ready) => server.listen(port, "127.0.0.1", ready));
-  info(`${bold("dashboard")} ${cyan(`http://localhost:${port}`)} ${dim("— ctrl-c to stop")}`);
+  // A tailnet address does not exist until Tailscale is up, and at login
+  // this can easily win that race. Retrying beats failing, because the thing
+  // that would have to notice a failure is a launchd job nobody reads.
+  for (;;) {
+    try {
+      await new Promise<void>((ready, broken) => {
+        server.once("error", broken);
+        server.listen(port, host, () => {
+          server.removeListener("error", broken);
+          ready();
+        });
+      });
+      break;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "EADDRNOTAVAIL") throw error;
+      warn(`${host} is not up yet — retrying in 10s`);
+      await new Promise((r) => setTimeout(r, 10_000));
+    }
+  }
+
+  const loopback = host === "127.0.0.1" || host === "::1" || host === "localhost";
+  info(`${bold("dashboard")} ${cyan(`http://${host.includes(":") ? `[${host}]` : host}:${port}`)} ${dim("— ctrl-c to stop")}`);
+  if (!loopback) {
+    // Say it plainly rather than in a doc nobody re-reads: the network is the
+    // whole access control here.
+    warn(
+      `reachable from ${host === "0.0.0.0" ? "every network this machine is on" : host} — this page has no login, ` +
+        `and anyone who loads it can comment on issues and clear the gate. Keep it on a network you control.`,
+    );
+  }
   await new Promise(() => {}); // serve until interrupted
 }
 
