@@ -10,6 +10,7 @@
  * that starts paid runs on a POST is otherwise reachable from any tab open in
  * the same browser.
  */
+import { execFileSync } from "node:child_process";
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { readSecret, requireRepo, resolveRole, type LoadedConfig } from "../core/config.js";
@@ -30,6 +31,8 @@ export function isAction(value: unknown): value is Action {
 export interface ActionResult {
   ok: boolean;
   message: string;
+  /** Set after a successful hand-off, for the page to show. */
+  handoff?: HandoffInfo | null;
 }
 
 /**
@@ -51,7 +54,10 @@ async function runActionNow(loaded: LoadedConfig, action: Action, issue: number)
   const role = resolveRole(config);
 
   if (action === "ready") return settled(await openGate(loaded, issue, false), /cleared for triage/);
-  if (action === "mine") return settled(await handOffFromChat(loaded, issue, false, role), /is yours/);
+  if (action === "mine") {
+    const result = settled(await handOffFromChat(loaded, issue, false, role), /is yours/);
+    return result.ok ? { ...result, handoff: handoffInfo(loaded, issue) } : result;
+  }
   if (action === "back") return settled(await handBackFromChat(loaded, issue, false), /is mine again/);
 
   const command = { kind: action, issue };
@@ -117,4 +123,50 @@ export function readLogTail(path: string, maxBytes = 64 * 1024): string {
   if (text.length <= maxBytes) return text;
   const tail = text.slice(-maxBytes);
   return `…\n${tail.slice(tail.indexOf("\n") + 1)}`;
+}
+
+export interface HandoffInfo {
+  issue: number;
+  path: string;
+  branch: string;
+  /** What to paste into an agent session opened in `path`. */
+  prompt: string;
+  /** The same, as one line for a terminal. */
+  command: string;
+}
+
+/**
+ * Where a handed-off issue's worktree is, and what to tell an agent there.
+ *
+ * Found by the briefing's first line rather than by directory name: `--slug`
+ * lets a person name the worktree anything.
+ */
+export function handoffInfo(loaded: LoadedConfig, issue: number): HandoffInfo | null {
+  if (!loaded.repoPath) return null;
+  const worktrees = join(loaded.repoPath, ".worktrees");
+  if (!existsSync(worktrees)) return null;
+  const heading = `# Handed off: #${issue}\n`;
+  const dir = readdirSync(worktrees)
+    .map((d) => join(worktrees, d))
+    .find((d) => {
+      const briefing = join(d, "HANDOFF.md");
+      return existsSync(briefing) && readFileSync(briefing, "utf8").startsWith(heading);
+    });
+  if (!dir) return null;
+
+  let branch = "";
+  try {
+    branch = execFileSync("git", ["-C", dir, "branch", "--show-current"], { encoding: "utf8" }).trim();
+  } catch {
+    // Still worth showing the path without it.
+  }
+  const prompt = [
+    `You're picking up GitHub issue #${issue} in ${loaded.config.target.repo}, handed off from the feedback-loop.`,
+    `Work only in this worktree (${dir}${branch ? `, branch ${branch}` : ""}).`,
+    "Read HANDOFF.md first: it has the report, what triage already found, and where the screenshots and transcripts are.",
+    "Run `npm run lab -- setup --yes` before running anything — the .env here points at production.",
+    "Then follow the repo's AGENTS.md workflow to fix it and ship a PR.",
+  ].join("\n");
+  const quote = (s: string): string => `'${s.replace(/'/g, `'\\''`)}'`;
+  return { issue, path: dir, branch, prompt, command: `cd ${quote(dir)} && claude ${quote(prompt)}` };
 }

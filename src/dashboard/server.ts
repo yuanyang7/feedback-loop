@@ -16,7 +16,7 @@ import { readRunLog, runsDir } from "../core/state.js";
 import { activeRuns } from "../intake/commands.js";
 import { GitHubClient, type Issue } from "../intake/github.js";
 import { HUMAN_OWNED } from "../worker/handoff.js";
-import { isAction, latestLog, readLogTail, runAction } from "./actions.js";
+import { handoffInfo, isAction, latestLog, readLogTail, runAction } from "./actions.js";
 import { renderPage, type IssueRow, type Overview } from "./render.js";
 import { scanRuns } from "./scan.js";
 
@@ -49,6 +49,15 @@ export async function serveDashboard(loaded: LoadedConfig, port: number): Promis
       }
       if (url.pathname === "/api/action") {
         return handleAction(loaded, token, req, res);
+      }
+      if (url.pathname === "/api/handoff") {
+        if (!authorised(req, token)) return json(res, 403, { ok: false, message: "Reload the page — its token is stale." });
+        const issue = Number(url.searchParams.get("issue"));
+        if (!Number.isInteger(issue) || issue <= 0) return json(res, 400, { ok: false, message: "bad issue" });
+        const found = handoffInfo(loaded, issue);
+        return found
+          ? json(res, 200, { ok: true, handoff: found })
+          : json(res, 404, { ok: false, message: `No handoff worktree with a HANDOFF.md for #${issue} on this machine.` });
       }
       if (url.pathname === "/api/log") {
         return handleLog(target, token, req, url, res);

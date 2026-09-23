@@ -88,7 +88,12 @@ dialog { width: min(920px, calc(100% - 32px)); border: 1px solid var(--line); bo
   background: var(--panel); color: var(--ink); padding: 0; }
 dialog::backdrop { background: rgba(0,0,0,.35); }
 dialog header { display: flex; align-items: center; gap: 10px; padding: 12px 16px; border-bottom: 1px solid var(--line); }
-dialog pre { margin: 0; border: 0; border-radius: 0; max-height: 70vh; }
+.ho-body { padding: 14px 16px 18px; }
+.ho-body h4 { display: flex; align-items: center; justify-content: space-between; margin: 16px 0 6px; font-size: 13px; }
+.ho-body pre { white-space: pre-wrap; word-break: break-word; }
+.ho-row { display: flex; gap: 10px; align-items: center; margin-bottom: 6px; }
+.ho-row code { flex: 1; min-width: 0; overflow-wrap: anywhere; font-size: 12.5px; }
+#log pre { margin: 0; border: 0; border-radius: 0; max-height: 70vh; }
 .stat b { display: block; font-size: 22px; font-weight: 600; font-variant-numeric: tabular-nums; }
 .stat span { color: var(--muted); font-size: 12px; }
 .run { background: var(--panel); border: 1px solid var(--line); border-radius: 10px;
@@ -171,6 +176,16 @@ export function renderPage(overview: Overview, runs: RunSummary[], token: string
 </div>
 <dialog id="log"><header><b id="log-title">log</b><span class="num" id="log-state"></span><span class="grow"></span>
   <button class="act" id="log-close">close</button></header><pre id="log-text"></pre></dialog>
+<dialog id="handoff"><header><b id="ho-title">handed off</b><span class="grow"></span>
+  <button class="act" id="ho-close">close</button></header>
+  <div class="ho-body">
+    <div class="ho-row"><span class="num">worktree</span><code id="ho-path"></code><button class="act" data-copy="ho-path">copy</button></div>
+    <div class="ho-row"><span class="num">branch</span><code id="ho-branch"></code></div>
+    <h4>Prompt for an agent <button class="act primary" data-copy="ho-prompt">copy prompt</button></h4>
+    <pre id="ho-prompt"></pre>
+    <h4>Or start one from a terminal <button class="act" data-copy="ho-command">copy command</button></h4>
+    <pre id="ho-command"></pre>
+  </div></dialog>
 <script>const TOKEN = ${JSON.stringify(token)};${SCRIPT}</script>
 </body></html>`;
 }
@@ -190,6 +205,7 @@ function actionsFor(issue: IssueRow, overview: Overview): string {
   const live = issue.running !== null;
   const buttons: string[] = [];
   if (has(overview.labels.humanOwned)) {
+    buttons.push(button("prompt", issue.number, { primary: true }));
     buttons.push(button("back", issue.number));
   } else {
     const thin = has(overview.labels.needsInfo);
@@ -206,7 +222,7 @@ function actionsFor(issue: IssueRow, overview: Overview): string {
 }
 
 const LABELS: Record<string, string> = {
-  ready: "ready", triage: "triage", fix: "fix", go: "go", mine: "hand off to me", back: "hand back", log: "log",
+  ready: "ready", triage: "triage", fix: "fix", go: "go", mine: "hand off to me", back: "hand back", log: "log", prompt: "agent prompt",
 };
 const TITLES: Record<string, string> = {
   ready: "Clear it for an autonomous attempt (adds the agent-ready label)",
@@ -216,6 +232,7 @@ const TITLES: Record<string, string> = {
   mine: "Take it off the loop and set up a worktree for you",
   back: "Give it back to the loop",
   log: "Show the latest worker log",
+  prompt: "Worktree path and a prompt to start an agent on it",
 };
 
 function button(action: string, issue: number, opts: { disabled?: boolean; primary?: boolean } = {}): string {
@@ -328,12 +345,42 @@ async function showLog(issue) {
 $("#log-close").addEventListener("click", () => $("#log").close());
 $("#log").addEventListener("close", () => clearTimeout(logTimer));
 
+function showHandoff(h) {
+  $("#ho-title").textContent = "#" + h.issue + " is yours";
+  $("#ho-path").textContent = h.path;
+  $("#ho-branch").textContent = h.branch || "(unknown)";
+  $("#ho-prompt").textContent = h.prompt;
+  $("#ho-command").textContent = h.command;
+  $("#handoff").showModal();
+}
+$("#ho-close").addEventListener("click", () => $("#handoff").close());
+// Reload once it is dismissed, not before: the row it came from has changed,
+// but the reload would take the panel with it.
+$("#handoff").addEventListener("close", () => { if (handoffReload) location.reload(); });
+let handoffReload = false;
+document.addEventListener("click", async (event) => {
+  const c = event.target.closest("button[data-copy]");
+  if (!c) return;
+  try {
+    await navigator.clipboard.writeText(document.getElementById(c.dataset.copy).textContent);
+    const was = c.textContent;
+    c.textContent = "copied";
+    setTimeout(() => (c.textContent = was), 1200);
+  } catch { toast("Couldn't copy — select the text instead.", true); }
+});
+async function fetchHandoff(issue) {
+  const res = await fetch("/api/handoff?issue=" + issue, { headers: { "x-feedback-loop-token": TOKEN } });
+  const body = await res.json().catch(() => ({ ok: false, message: "HTTP " + res.status }));
+  if (body.ok) showHandoff(body.handoff); else toast(body.message, true);
+}
+
 document.addEventListener("click", async (event) => {
   const b = event.target.closest("button.act[data-action]");
   if (!b || b.disabled) return;
   const action = b.dataset.action;
   const issue = Number(b.dataset.issue);
   if (action === "log") return showLog(issue);
+  if (action === "prompt") return fetchHandoff(issue);
   if (CONFIRM[action] && !confirm(CONFIRM[action].replace("#N", "#" + issue))) return;
   const siblings = [...b.parentElement.querySelectorAll("button.act")].filter((s) => !s.disabled);
   siblings.forEach((s) => (s.disabled = true));
@@ -346,6 +393,10 @@ document.addEventListener("click", async (event) => {
       body: JSON.stringify({ action, issue }),
     });
     const body = await res.json().catch(() => ({ ok: false, message: "HTTP " + res.status }));
+    if (body.ok && body.handoff) {
+      handoffReload = true;
+      return showHandoff(body.handoff);
+    }
     toast(body.message, !body.ok);
     if (body.ok) return setTimeout(() => location.reload(), 1500);
   } catch (error) {
