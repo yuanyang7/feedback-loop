@@ -11,6 +11,7 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { z } from "zod";
 import { claimSelf } from "../intake/commands.js";
+import { readDecisions, withDecisions } from "../core/decisions.js";
 import { readSecret, type LoadedConfig, requireRepo } from "../core/config.js";
 import { bold, cyan, dim, green, info, red, warn, yellow } from "../core/log.js";
 import { appendRunLog, runsDir } from "../core/state.js";
@@ -288,6 +289,7 @@ async function runFixInner(
 
   // Triage wrote its findings on the issue. Reuse them rather than rediscovering.
   const triageNotes = await lastTriageComment(config.target.repo, issue.number);
+  const decisions = await readDecisions(github, issue.number);
 
   if (opts.dryRun) {
     console.log(`\n${dim("[dry-run] would run the fix phase with this prompt:")}\n`);
@@ -366,7 +368,10 @@ async function runFixInner(
 
     const fixRun = await runPhase(
       `fix-${attempt}`,
-      FIX_PROMPT(issue, triageNotes, config.worker.denyPaths, findings, evidence, previousFix, savedAttachments(target, issue.number)),
+      withDecisions(
+        FIX_PROMPT(issue, triageNotes, config.worker.denyPaths, findings, evidence, previousFix, savedAttachments(target, issue.number)),
+        decisions,
+      ),
       FixSchema,
       {
         ...phaseOpts,

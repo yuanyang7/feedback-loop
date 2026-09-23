@@ -16,6 +16,7 @@ import { DiscordClient } from "../intake/discord.js";
 import { setState } from "../intake/emoji.js";
 import { decodeFooter } from "../intake/footer.js";
 import { GitHubClient, type Issue } from "../intake/github.js";
+import { readDecisions, withDecisions } from "../core/decisions.js";
 import { checkGate } from "./gate.js";
 import { runPhase } from "./agent.js";
 import { ensureWorktree, isUntouched, removeWorktree, slugForIssue } from "./worktree.js";
@@ -180,7 +181,8 @@ export async function runTriage(
 
   const attachments = savedAttachments(target, issue.number);
   if (attachments.length > 0) info(`  ${dim(`${attachments.length} attachment(s) from the reporter`)}`);
-  const run = await runPhase("triage", PROMPT(issue, config.worker.denyPaths, evidence, attachments), VerdictSchema, {
+  const decisions = await readDecisions(github, issue.number);
+  const run = await runPhase("triage", withDecisions(PROMPT(issue, config.worker.denyPaths, evidence, attachments), decisions), VerdictSchema, {
     cwd: worktree.path,
     artifactDir,
     model: config.worker.triageModel,

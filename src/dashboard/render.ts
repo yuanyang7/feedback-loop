@@ -13,6 +13,8 @@ export interface IssueRow {
   /** What is running on it right now, e.g. "fix #1210", or null. */
   running: string | null;
   hasLog: boolean;
+  /** For an escalated issue, the loop's last comment on it. */
+  asked: string | null;
 }
 
 export interface IssueGroup {
@@ -25,7 +27,7 @@ export interface Overview {
   target: string;
   repo: string;
   /** Label names the buttons key off, as this target configured them. */
-  labels: { agentReady: string; readyToFix: string; needsInfo: string; humanOwned: string };
+  labels: { agentReady: string; readyToFix: string; needsInfo: string; humanOwned: string; needsDecision: string };
   groups: IssueGroup[];
   /** False when this process has no checkout to start a run in. */
   canRun: boolean;
@@ -80,6 +82,12 @@ button.stat:disabled { cursor: default; opacity: 0.55; }
 .act.primary { border-color: var(--accent); color: var(--accent); }
 .act:disabled { opacity: 0.45; cursor: not-allowed; }
 .run-acts { margin-top: 14px; }
+.answer { flex: 1 1 100%; min-width: 0; display: grid; grid-template-columns: minmax(0, 1fr); gap: 8px; margin-top: 2px; }
+.answer textarea { width: 100%; font: inherit; font-size: 14px; padding: 8px 10px; border-radius: 7px;
+  border: 1px solid var(--line); background: var(--bg); color: var(--ink); resize: vertical; }
+.answer textarea:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
+.answer summary { cursor: pointer; color: var(--muted); font-size: 13px; }
+.answer pre { white-space: pre-wrap; overflow-wrap: anywhere; margin: 6px 0 0; }
 .toast { position: fixed; left: 50%; bottom: 20px; transform: translateX(-50%); max-width: min(640px, calc(100% - 32px));
   background: var(--ink); color: var(--bg); padding: 10px 14px; border-radius: 9px; font-size: 13.5px;
   white-space: pre-wrap; box-shadow: 0 6px 24px rgba(0,0,0,.2); z-index: 10; }
@@ -156,7 +164,7 @@ export function renderPage(overview: Overview, runs: RunSummary[], token: string
   </div>
 
   ${overview.groups.map((g) => `<section class="group card" id="g-${esc(g.key)}" hidden>
-    ${g.issues.map((issue) => renderIssue(issue, overview)).join("")}
+    ${g.issues.map((issue) => renderIssue(issue, overview, g.key === "need-you")).join("")}
   </section>`).join("")}
   <section class="group card" id="g-prs" hidden>
     ${overview.agentPrs.map((pr) => `<div class="issue"><span class="title"><a href="${esc(pr.url)}" target="_blank" rel="noopener">#${pr.number}</a> ${esc(pr.title)}</span></div>`).join("")}
@@ -239,14 +247,28 @@ function button(action: string, issue: number, opts: { disabled?: boolean; prima
   return `<button class="act${opts.primary ? " primary" : ""}" data-action="${action}" data-issue="${issue}" title="${esc(TITLES[action] ?? action)}"${opts.disabled ? " disabled" : ""}>${esc(LABELS[action] ?? action)}</button>`;
 }
 
-function renderIssue(issue: IssueRow, overview: Overview): string {
+function renderIssue(issue: IssueRow, overview: Overview, answerable = false): string {
   const chips = issue.labels.map((l) => `<span class="chip">${esc(l)}</span>`).join("");
   return `<div class="issue">
     <span class="title"><a href="${esc(issue.url)}" target="_blank" rel="noopener"><b>#${issue.number}</b></a> ${esc(issue.title)}
       ${issue.running ? `<span class="tag ok">${esc(issue.running)}</span>` : ""}
       <span class="chips">${chips}</span></span>
     ${actionsFor(issue, overview)}
+    ${answerable && !issue.labels.includes(overview.labels.humanOwned) ? answerBox(issue, overview) : ""}
   </div>`;
+}
+
+/** The reply box on an issue the loop is waiting on a person for. */
+function answerBox(issue: IssueRow, overview: Overview): string {
+  return `<form class="answer" data-issue="${issue.number}">
+    ${issue.asked ? `<details><summary>What the loop said</summary><pre>${esc(issue.asked)}</pre></details>` : ""}
+    <textarea name="text" rows="3" placeholder="Your decision — the next triage/fix run for #${issue.number} reads this. e.g. &quot;Only fix the iOS side; leave web alone.&quot;"></textarea>
+    <div class="acts">
+      <button class="act" type="submit" value="none">post answer</button>
+      ${overview.canRun ? `<button class="act" type="submit" value="triage">answer &amp; re-triage</button>
+      <button class="act primary" type="submit" value="go">answer &amp; go</button>` : ""}
+    </div>
+  </form>`;
 }
 
 function renderRun(run: RunSummary, overview: Overview, rows: Map<number, IssueRow>): string {
@@ -344,6 +366,30 @@ async function showLog(issue) {
 }
 $("#log-close").addEventListener("click", () => $("#log").close());
 $("#log").addEventListener("close", () => clearTimeout(logTimer));
+
+document.addEventListener("submit", async (event) => {
+  const form = event.target.closest("form.answer");
+  if (!form) return;
+  event.preventDefault();
+  const then = event.submitter ? event.submitter.value : "none";
+  const issue = Number(form.dataset.issue);
+  const text = form.elements.text.value;
+  if (!text.trim()) return toast("Write an answer first.", true);
+  if (then !== "none" && !confirm((then === "go" ? "Post the answer and start go on #" : "Post the answer and re-triage #") + issue + "? It spends budget.")) return;
+  const buttons = [...form.querySelectorAll("button")];
+  buttons.forEach((b) => (b.disabled = true));
+  try {
+    const res = await fetch("/api/action", {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-feedback-loop-token": TOKEN },
+      body: JSON.stringify({ action: "decide", issue, text, then }),
+    });
+    const body = await res.json().catch(() => ({ ok: false, message: "HTTP " + res.status }));
+    toast(body.message, !body.ok);
+    if (body.ok) return setTimeout(() => location.reload(), 1800);
+  } catch (error) { toast(String(error), true); }
+  buttons.forEach((b) => (b.disabled = false));
+});
 
 function showHandoff(h) {
   $("#ho-title").textContent = "#" + h.issue + " is yours";

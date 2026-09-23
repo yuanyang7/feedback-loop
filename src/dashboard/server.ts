@@ -106,13 +106,13 @@ async function handleAction(loaded: LoadedConfig, token: string, req: IncomingMe
   if (req.method !== "POST") return json(res, 405, { ok: false, message: "POST only" });
   if (!authorised(req, token)) return json(res, 403, { ok: false, message: "Reload the page — its token is stale." });
 
-  let body: { action?: unknown; issue?: unknown };
+  let body: { action?: unknown; issue?: unknown; text?: unknown; then?: unknown };
   try {
     const chunks: Buffer[] = [];
     let size = 0;
     for await (const chunk of req) {
       size += (chunk as Buffer).length;
-      if (size > 4096) return json(res, 413, { ok: false, message: "too large" });
+      if (size > 32 * 1024) return json(res, 413, { ok: false, message: "too large" });
       chunks.push(chunk as Buffer);
     }
     body = JSON.parse(Buffer.concat(chunks).toString("utf8")) as typeof body;
@@ -126,7 +126,9 @@ async function handleAction(loaded: LoadedConfig, token: string, req: IncomingMe
   }
   try {
     info(`${bold("dashboard")} ${body.action} #${issue}`);
-    return json(res, 200, await runAction(loaded, body.action, issue));
+    const then = body.then === "triage" || body.then === "go" ? body.then : "none";
+    const text = typeof body.text === "string" ? body.text : "";
+    return json(res, 200, await runAction(loaded, body.action, issue, { text, then }));
   } catch (error) {
     return json(res, 500, { ok: false, message: error instanceof Error ? error.message : String(error) });
   }
@@ -184,6 +186,15 @@ async function buildOverview(loaded: LoadedConfig): Promise<Overview> {
     github.listPullRequests({ state: "open" }),
   ]);
   const running = activeRuns(config.target.name);
+  // Why each escalated issue is waiting: the loop's last comment on it.
+  const asked = new Map<number, string>(
+    await Promise.all(
+      needsDecision.map(async (issue): Promise<[number, string]> => {
+        const comments = await github.issueComments(issue.number).catch(() => []);
+        return [issue.number, comments.at(-1)?.body.replace(/<!--[\s\S]*?-->/g, "").trim() ?? ""];
+      }),
+    ),
+  );
   // GitHub labels are shared with people: `needs-decision` on an issue you
   // filed by hand is your note, not the loop asking for you. So an issue is
   // shown only once the loop has a stake in it — it came from chat, someone
@@ -203,6 +214,7 @@ async function buildOverview(loaded: LoadedConfig): Promise<Overview> {
     labels: issue.labels.map((l) => l.name),
     running: running.find((r) => r.issue === issue.number)?.what ?? null,
     hasLog: latestLog(config.target.name, issue.number) !== null,
+    asked: asked.get(issue.number) || null,
   });
 
   const today = new Date().toISOString().slice(0, 10);
@@ -218,6 +230,7 @@ async function buildOverview(loaded: LoadedConfig): Promise<Overview> {
       readyToFix: labels.readyToFix,
       needsInfo: labels.needsInfo,
       humanOwned: HUMAN_OWNED,
+      needsDecision: labels.needsDecision,
     },
     // Order is the order the tiles appear in: what wants a person first.
     groups: [

@@ -20,8 +20,9 @@ import { GitHubClient } from "../intake/github.js";
 import { gateRefusal, openGate } from "../intake/run.js";
 import { handBackFromChat, handOffFromChat } from "../worker/handoff.js";
 import { enqueueRequest } from "../worker/queue.js";
+import { decisionComment } from "../core/decisions.js";
 
-export const ACTIONS = ["ready", "triage", "fix", "go", "mine", "back"] as const;
+export const ACTIONS = ["ready", "triage", "fix", "go", "mine", "back", "decide"] as const;
 export type Action = (typeof ACTIONS)[number];
 
 export function isAction(value: unknown): value is Action {
@@ -43,13 +44,53 @@ export interface ActionResult {
  */
 let last: Promise<unknown> = Promise.resolve();
 
-export function runAction(loaded: LoadedConfig, action: Action, issue: number): Promise<ActionResult> {
-  const next = last.then(() => runActionNow(loaded, action, issue));
+/** What to do once an answer is posted. */
+export type Then = "none" | "triage" | "go";
+
+export function runAction(
+  loaded: LoadedConfig,
+  action: Action,
+  issue: number,
+  extra: { text?: string; then?: Then } = {},
+): Promise<ActionResult> {
+  const next = last.then(() =>
+    action === "decide" ? decide(loaded, issue, extra.text ?? "", extra.then ?? "none") : runActionNow(loaded, action, issue),
+  );
   last = next.catch(() => undefined);
   return next;
 }
 
-async function runActionNow(loaded: LoadedConfig, action: Action, issue: number): Promise<ActionResult> {
+/**
+ * Answer an escalation. The answer is posted as a marked comment — the one
+ * kind a later run reads — and `needs-decision` comes off, since it has been
+ * answered. Starting a run is a separate choice: sometimes the answer is
+ * "leave it".
+ */
+async function decide(loaded: LoadedConfig, issue: number, text: string, then: Then): Promise<ActionResult> {
+  const { config } = loaded;
+  if (!text.trim()) return { ok: false, message: "Write an answer first." };
+  if (text.length > 8000) return { ok: false, message: "That's too long for a decision — keep it under 8000 characters." };
+  const github = new GitHubClient(
+    config.target.repo,
+    config.github.tokenFile ? readSecret(config.github.tokenFile, "GITHUB_TOKEN") : undefined,
+  );
+  const found = await github.getIssue(issue).catch(() => null);
+  if (!found || found.state !== "OPEN") return { ok: false, message: `#${issue} isn't an open issue.` };
+
+  await github.commentOnIssue(issue, decisionComment(text));
+  await github.removeLabels(issue, [config.github.labels.needsDecision]).catch(() => undefined);
+  if (then === "none") return { ok: true, message: `Answer posted on #${issue}.` };
+
+  // Re-triage needs the gate; answering is the decision that opens it, the
+  // same way typing `go` is.
+  if (then === "triage" && !found.labels.some((l) => l.name === config.github.labels.agentReady)) {
+    await github.addLabels(issue, [config.github.labels.agentReady]);
+  }
+  const started = await runActionNow(loaded, then, issue);
+  return { ok: started.ok, message: `Answer posted on #${issue}. ${started.message}` };
+}
+
+async function runActionNow(loaded: LoadedConfig, action: Exclude<Action, "decide">, issue: number): Promise<ActionResult> {
   const { config } = loaded;
   const role = resolveRole(config);
 
