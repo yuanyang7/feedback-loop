@@ -134,7 +134,7 @@ export const ConfigSchema = z.object({
     .object({
       /** cli = the `claude` CLI you already log into. api = ANTHROPIC_API_KEY. */
       backend: z.enum(["cli", "api"]).default("cli"),
-      model: z.string().default("claude-sonnet-5"),
+      model: z.string().default("claude-sonnet-5-5"),
       /** Costs the same as low here, and dedupe judgement is worth the headroom. */
       effort: z.enum(["low", "medium", "high", "xhigh", "max"]).default("medium"),
       /** Below this, intake files nothing and asks a human to restate. */
@@ -204,12 +204,12 @@ export const ConfigSchema = z.object({
       triageMaxUsd: z.number().positive().default(3),
       fixMaxUsd: z.number().positive().default(10),
       reviewMaxUsd: z.number().positive().default(4),
-      triageModel: z.string().default("claude-sonnet-5"),
+      triageModel: z.string().default("claude-sonnet-5-5"),
       /** Writing the fix is the expensive judgement call, so it gets the better model. */
-      fixModel: z.string().default("claude-opus-5"),
+      fixModel: z.string().default("claude-opus-5-5"),
       fixEffort: z.enum(["low", "medium", "high", "xhigh", "max"]).default("high"),
       /** Review is the last gate before a human, so it does not economise either. */
-      reviewModel: z.string().default("claude-opus-5"),
+      reviewModel: z.string().default("claude-opus-5-5"),
       reviewEffort: z.enum(["low", "medium", "high", "xhigh", "max"]).default("high"),
       triageEffort: z.enum(["low", "medium", "high", "xhigh", "max"]).default("high"),
       denyPaths: z.array(z.string()).default(DEFAULT_DENY_PATHS),

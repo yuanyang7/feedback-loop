@@ -532,7 +532,7 @@ intake:
   # cli = spawn the \`claude\` CLI, using the Claude Code login you already have.
   # api = the Anthropic SDK; needs ANTHROPIC_API_KEY. Better for an unattended server.
   backend: cli
-  model: claude-sonnet-5
+  model: claude-sonnet-5-5
   minConfidence: 0.7
   lookbackLimit: 100
 
