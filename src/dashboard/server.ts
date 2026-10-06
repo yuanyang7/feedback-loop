@@ -116,7 +116,14 @@ export async function serveDashboard(what: LoadedConfig | Mounted[], opts: Dashb
     `${host}:${port}`,
     // An IPv6 literal has to be bracketed in a Host header.
     ...(host.includes(":") ? [`[${host}]:${port}`] : []),
-    ...(opts.allowHosts ?? []).map((h) => (h.includes(":") && !h.startsWith("[") ? h : `${h}:${port}`)),
+    ...(opts.allowHosts ?? []).map((h) => h.toLowerCase()).flatMap((h) => {
+      if (h.includes(":") && !h.startsWith("[")) return [h];
+      // A full MagicDNS name brings its short form along: the tailnet's search
+      // domain makes `mac-mini` resolve to the same machine, and a page that
+      // was opened under the short name builds its links to this one with it.
+      const short = h.includes(".") && !/^[\d.]+$/.test(h) ? h.split(".")[0] : null;
+      return [`${h}:${port}`, ...(short ? [`${short}:${port}`] : [])];
+    }),
   ]);
 
   const server = createServer((req, res) => {
@@ -125,7 +132,8 @@ export async function serveDashboard(what: LoadedConfig | Mounted[], opts: Dashb
 
       // DNS rebinding: a hostile name that resolves to 127.0.0.1 would be
       // same-origin with this page, able to read the token and press buttons.
-      if (!hosts.has(req.headers.host ?? "")) {
+      // A fully qualified name may arrive with its root dot (`name.ts.net.`).
+      if (!hosts.has((req.headers.host ?? "").toLowerCase().replace(/\.(?=:\d+$)/, ""))) {
         res.writeHead(421).end("wrong host");
         return;
       }
