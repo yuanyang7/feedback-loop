@@ -12,7 +12,7 @@ import { join } from "node:path";
 import test from "node:test";
 
 process.env.FEEDBACK_LOOP_HOME = mkdtempSync(join(tmpdir(), "fl-handoff-"));
-const { blockingRun, releaseToHuman, slugForHandoff, writeBriefing, HUMAN_OWNED } = await import("./handoff.js");
+const { agentdeckLink, blockingRun, releaseToHuman, slugForHandoff, writeBriefing, HUMAN_OWNED } = await import("./handoff.js");
 const { heldBack } = await import("./pickup.js");
 const { parseCommand } = await import("../intake/commands.js");
 import type { Config } from "../core/config.js";
@@ -169,4 +169,10 @@ test("mine and back need an exact issue number, because a mention may not be req
   // The older verbs keep taking the first token: they are not English words,
   // so a trailing sentence after the number is a comment, not an ambiguity.
   deepStrictEqual(bare("go 1207 please"), { kind: "go", issue: 1207 });
+});
+
+test("the agentdeck link is only there when configured, and encodes the whole path", () => {
+  strictEqual(agentdeckLink(config, "/x/y"), null);
+  const deck = { ...config, agentdeck: { url: "http://mac:7878/" } } as unknown as Config;
+  strictEqual(agentdeckLink(deck, "/Users/me/code/app/.worktrees/manual-7 x"), "http://mac:7878/#dir=%2FUsers%2Fme%2Fcode%2Fapp%2F.worktrees%2Fmanual-7%20x");
 });

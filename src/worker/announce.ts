@@ -22,10 +22,11 @@ export function announcer(
   messageId: string | undefined,
 ): Announcer {
   const write = async (text: string): Promise<void> => {
-    if (!channelId) return;
-    const discord = new DiscordClient(
-      readSecret(loaded.config.discord.tokenFile, "DISCORD_BOT_TOKEN"),
-    );
+    // No channel to post in, or no Discord at all on this target: a run
+    // started from a terminal or the dashboard reports on the issue instead.
+    const chat = loaded.config.discord;
+    if (!channelId || !chat) return;
+    const discord = new DiscordClient(readSecret(chat.tokenFile, "DISCORD_BOT_TOKEN"));
     // Without a message to edit — a run started from a terminal — say it once
     // rather than staying silent.
     if (messageId) await discord.editMessage(channelId, messageId, text);

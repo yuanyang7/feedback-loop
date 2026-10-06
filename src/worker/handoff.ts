@@ -28,6 +28,17 @@ import { ensureWorktree, type Worktree } from "./worktree.js";
 /** The label that marks an issue as a person's, not the loop's. */
 export const HUMAN_OWNED = "human-owned";
 
+/**
+ * A link that opens a worktree in agentdeck, when the config names one.
+ * agentdeck reads the directory from the fragment, so the path is encoded
+ * whole rather than as segments.
+ */
+export function agentdeckLink(config: LoadedConfig["config"], worktreePath: string): string | null {
+  const url = config.agentdeck?.url;
+  if (!url) return null;
+  return `${url.replace(/\/+$/, "")}/#dir=${encodeURIComponent(worktreePath)}`;
+}
+
 export interface HandoffOptions {
   issueNumber: number;
   /**
@@ -207,6 +218,8 @@ export async function handOff(loaded: LoadedConfig, opts: HandoffOptions): Promi
     // against the shared one.
     info(`  ${dim("cd")} ${worktree.path}`);
     info(`  ${dim("npm run lab -- setup --yes")}   ${dim("# its own database, storage and port")}`);
+    const deck = agentdeckLink(config, worktree.path);
+    if (deck) info(`  ${dim("open in agentdeck:")} ${cyan(deck)}`);
   }
   info(`  ${dim(`feedback-loop handoff . --issue ${issue.number} --return`)}   ${dim("# when you are done")}`);
   return worktree;

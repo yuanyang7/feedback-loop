@@ -17,7 +17,15 @@ export async function runReconcile(loaded: LoadedConfig, opts: { dryRun: boolean
   const { config } = loaded;
   const target = config.target.name;
 
-  const discord = new DiscordClient(readSecret(config.discord.tokenFile, "DISCORD_BOT_TOKEN"));
+  // Reconcile exists to catch chat reactions up with GitHub. Without chat
+  // there is nothing to catch up; GitHub is already the whole truth.
+  const chat = config.discord;
+  if (!chat) {
+    info(`${dim("reconcile skipped —")} ${target} has no discord section.`);
+    return;
+  }
+
+  const discord = new DiscordClient(readSecret(chat.tokenFile, "DISCORD_BOT_TOKEN"));
   const github = new GitHubClient(
     config.target.repo,
     config.github.tokenFile ? readSecret(config.github.tokenFile, "GITHUB_TOKEN") : undefined,
@@ -33,7 +41,11 @@ export async function runReconcile(loaded: LoadedConfig, opts: { dryRun: boolean
 
   for (const issue of issues) {
     const link = decodeFooter(issue.body);
-    if (!link || link.channel !== config.discord.channelId) continue;
+    // `decodeFooter` returns null for a footer without message ids — one
+    // written by `report`, which has a source but no chat to react in — so
+    // manually filed issues fall out here rather than erroring on a channel
+    // they never had.
+    if (!link || link.channel !== chat.channelId) continue;
 
     // This used to skip any closed issue already announced as closed, to avoid
     // growing into dozens of GitHub calls a tick. It saved none: deriveState

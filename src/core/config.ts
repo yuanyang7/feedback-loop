@@ -26,6 +26,38 @@ const DEFAULT_DENY_PATHS = [
   "playwright.config.*",
 ];
 
+const DiscordSchema = z.object({
+  guildId: z.string(),
+  channelId: z.string(),
+  /** File holding DISCORD_BOT_TOKEN=… (or the bare token). */
+  tokenFile: z.string(),
+  /** Authors whose messages are never filed — e.g. the bots themselves. */
+  ignoreAuthorIds: z.array(z.string()).default([]),
+  /** Mentioning one of these bypasses the confidence floor. */
+  mentionTriggerIds: z.array(z.string()).default([]),
+  /**
+   * Discord user ids allowed to start worker runs from chat. Deliberately
+   * separate from every other list here: this one authorises spending money
+   * and running code on the machine, so it is opt-in and names people, not
+   * roles. Empty means chat cannot start anything.
+   */
+  operatorIds: z.array(z.string()).default([]),
+  /**
+   * Extra channels polled for commands only — a DM is the natural place to
+   * drive this from a phone. Reports are never taken from here: intake stays
+   * scoped to channelId so ordinary conversation cannot become issues.
+   */
+  commandChannelIds: z.array(z.string()).default([]),
+  /**
+   * Reply in-channel with the issue number when something is filed. A
+   * reaction tells the reporter it landed somewhere; only a link tells them
+   * where, and lets them follow it.
+   */
+  replyWithIssue: z.boolean().default(true),
+});
+
+export type DiscordConfig = z.infer<typeof DiscordSchema>;
+
 export const ConfigSchema = z.object({
   /**
    * Which half of the pipeline this host runs.
@@ -63,35 +95,14 @@ export const ConfigSchema = z.object({
     /** Checkout to work in. Defaults to the directory containing .feedback-loop/. */
     path: z.string().optional(),
   }),
-  discord: z.object({
-    guildId: z.string(),
-    channelId: z.string(),
-    /** File holding DISCORD_BOT_TOKEN=… (or the bare token). */
-    tokenFile: z.string(),
-    /** Authors whose messages are never filed — e.g. the bots themselves. */
-    ignoreAuthorIds: z.array(z.string()).default([]),
-    /** Mentioning one of these bypasses the confidence floor. */
-    mentionTriggerIds: z.array(z.string()).default([]),
-    /**
-     * Discord user ids allowed to start worker runs from chat. Deliberately
-     * separate from every other list here: this one authorises spending money
-     * and running code on the machine, so it is opt-in and names people, not
-     * roles. Empty means chat cannot start anything.
-     */
-    operatorIds: z.array(z.string()).default([]),
-    /**
-     * Extra channels polled for commands only — a DM is the natural place to
-     * drive this from a phone. Reports are never taken from here: intake stays
-     * scoped to channelId so ordinary conversation cannot become issues.
-     */
-    commandChannelIds: z.array(z.string()).default([]),
-    /**
-     * Reply in-channel with the issue number when something is filed. A
-     * reaction tells the reporter it landed somewhere; only a link tells them
-     * where, and lets them follow it.
-     */
-    replyWithIssue: z.boolean().default(true),
-  }),
+  /**
+   * The chat side, which is optional. Without it there is no intake, no
+   * reconcile and no chat commands — reports arrive through `report` (a
+   * terminal, a hub, an editor) and the worker, the gate, `status` and the
+   * dashboard all work exactly as they do with it. Either omit the block or
+   * write `discord: null`; both mean the same thing.
+   */
+  discord: DiscordSchema.nullish().transform((v) => v ?? null),
   github: z.object({
     /** File holding a GitHub token. Falls back to the ambient `gh` login. */
     tokenFile: z.string().optional(),
@@ -215,9 +226,39 @@ export const ConfigSchema = z.object({
       denyPaths: z.array(z.string()).default(DEFAULT_DENY_PATHS),
     })
     .prefault({}),
+  /**
+   * Where the dashboard for this target is served, if anywhere — so that
+   * `status --json` and anything built on it can link to the page rather than
+   * guess a port. Purely informational; nothing here starts a server from it.
+   */
+  dashboard: z
+    .object({
+      url: z.url().optional(),
+    })
+    .prefault({}),
+  /**
+   * An agentdeck instance to open handed-off worktrees in. When set, `handoff`
+   * and the dashboard show an "open in agentdeck" link for the worktree —
+   * `${url}/#dir=<worktree>` — and nothing else changes.
+   */
+  agentdeck: z
+    .object({
+      url: z.url(),
+    })
+    .nullish()
+    .transform((v) => v ?? null),
 });
 
 export type Config = z.infer<typeof ConfigSchema>;
+
+/** The Discord block, or an error saying this target has none. */
+export function requireDiscord(config: Config): DiscordConfig {
+  if (config.discord) return config.discord;
+  throw new Error(
+    `Target ${config.target.name} has no discord section in its config — chat intake, reconcile and ` +
+      `chat commands are off for it. File reports with \`feedback-loop report\` instead.`,
+  );
+}
 
 export interface LoadedConfig {
   config: Config;

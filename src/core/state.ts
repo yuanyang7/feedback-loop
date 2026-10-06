@@ -86,6 +86,12 @@ export interface RunLogEntry {
 
 const ROOT = process.env.FEEDBACK_LOOP_HOME ?? join(homedir(), ".feedback-loop");
 
+/** The state root itself — `~/.feedback-loop`, or FEEDBACK_LOOP_HOME. */
+export function homeDir(): string {
+  mkdirSync(ROOT, { recursive: true });
+  return ROOT;
+}
+
 export function stateDir(target: string): string {
   const dir = join(ROOT, target);
   mkdirSync(dir, { recursive: true });

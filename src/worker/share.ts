@@ -40,7 +40,8 @@ export async function shareEvidence(
    */
   text: string,
 ): Promise<void> {
-  if (!channelId) return;
+  const chat = loaded.config.discord;
+  if (!channelId || !chat) return;
 
   const dir = evidenceDir(artifactDir);
   // Not only images: #1215 captured no screenshots at all — the surface was
@@ -72,7 +73,7 @@ export async function shareEvidence(
   const omitted = ordered.length - files.length;
   const note = omitted > 0 ? `\n<sub>${omitted} more in \`${dir}\`</sub>` : "";
 
-  const discord = new DiscordClient(readSecret(loaded.config.discord.tokenFile, "DISCORD_BOT_TOKEN"));
+  const discord = new DiscordClient(readSecret(chat.tokenFile, "DISCORD_BOT_TOKEN"));
   const sent = await discord
     .sendFiles(channelId, `${text}${note}`, files, undefined, runMessageId)
     .catch(() => null);

@@ -390,10 +390,11 @@ async function react(
   issue: Issue,
   state: "working" | "needsDecision" | "runFailed",
 ): Promise<void> {
+  // Nothing to react on for an issue filed outside chat (`report` writes a
+  // footer with no message ids), and nowhere to react from without Discord.
   const link = decodeFooter(issue.body);
-  if (!link) return;
-  const discord = new DiscordClient(
-    readSecret(loaded.config.discord.tokenFile, "DISCORD_BOT_TOKEN"),
-  );
+  const chat = loaded.config.discord;
+  if (!link || !chat) return;
+  const discord = new DiscordClient(readSecret(chat.tokenFile, "DISCORD_BOT_TOKEN"));
   await setState(discord, link.channel, link.anchor ?? link.messages[0]!, state).catch(() => undefined);
 }

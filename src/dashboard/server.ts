@@ -15,8 +15,9 @@ import { readSecret, resolveRole, type LoadedConfig } from "../core/config.js";
 import { bold, cyan, dim, info, warn } from "../core/log.js";
 import { readRunLog, runsDir } from "../core/state.js";
 import { activeRuns } from "../intake/commands.js";
-import { GitHubClient, type Issue } from "../intake/github.js";
-import { HUMAN_OWNED } from "../worker/handoff.js";
+import { GitHubClient, issueOfPullRequest, type Issue } from "../intake/github.js";
+import { agentdeckLink, HUMAN_OWNED } from "../worker/handoff.js";
+import { targetStatus, type TargetStatus } from "./summary.js";
 import { handoffInfo, isAction, latestLog, readLogTail, runAction } from "./actions.js";
 import { renderPage, type IssueRow, type Overview } from "./render.js";
 import { scanRuns } from "./scan.js";
@@ -49,6 +50,12 @@ export interface DashboardOptions {
   allowHosts?: string[];
 }
 
+/** One mounted target: its config and the path prefix its page lives under. */
+export interface Mounted {
+  name: string;
+  loaded: LoadedConfig;
+}
+
 /**
  * The machine's address on the tailnet, if it is up.
  *
@@ -68,9 +75,15 @@ function tailnetAddress(): string | null {
   return null;
 }
 
-export async function serveDashboard(loaded: LoadedConfig, opts: DashboardOptions): Promise<void> {
-  const { config } = loaded;
+/**
+ * Serve one target at `/`, or — given several — an index at `/` and each
+ * target under `/<name>/`. The token and the Host check are per process
+ * either way: one page, one origin, however many targets it shows.
+ */
+export async function serveDashboard(what: LoadedConfig | Mounted[], opts: DashboardOptions): Promise<void> {
   const { port } = opts;
+  const targets: Mounted[] = Array.isArray(what) ? what : [{ name: what.config.target.name, loaded: what }];
+  const multi = Array.isArray(what);
   // `--host tailscale` rather than a literal address, so a launchd job does
   // not hardcode something that changes when the tailnet is reset — and so
   // the plist reads as the intent instead of as a number.
@@ -91,8 +104,6 @@ export async function serveDashboard(loaded: LoadedConfig, opts: DashboardOption
       await new Promise((r) => setTimeout(r, 10_000));
     }
   }
-  const target = config.target.name;
-  const root = resolve(runsDir(target));
   // Per process, and only ever written into the page this server renders. A
   // page on another origin can send a simple POST here but cannot set a custom
   // header without a preflight we never answer, and cannot read this token.
@@ -118,44 +129,28 @@ export async function serveDashboard(loaded: LoadedConfig, opts: DashboardOption
         res.writeHead(421).end("wrong host");
         return;
       }
-      if (url.pathname === "/api/action") {
-        return handleAction(loaded, token, req, res);
+
+      if (!multi) {
+        return handleTarget(targets[0]!.loaded, "", token, req, res, url, url.pathname);
       }
-      if (url.pathname === "/api/handoff") {
-        if (!authorised(req, token)) return json(res, 403, { ok: false, message: "Reload the page — its token is stale." });
-        const issue = Number(url.searchParams.get("issue"));
-        if (!Number.isInteger(issue) || issue <= 0) return json(res, 400, { ok: false, message: "bad issue" });
-        const found = handoffInfo(loaded, issue);
-        return found
-          ? json(res, 200, { ok: true, handoff: found })
-          : json(res, 404, { ok: false, message: `No handoff worktree with a HANDOFF.md for #${issue} on this machine.` });
+      if (url.pathname === "/") {
+        return serveIndex(targets, token, req, res, url);
       }
-      if (url.pathname === "/api/log") {
-        return handleLog(target, token, req, url, res);
-      }
-      if (url.pathname.startsWith("/evidence/")) {
-        return serveEvidence(root, url.pathname, res);
-      }
-      if (url.pathname !== "/") {
+      // `/<name>` and `/<name>/…` — the name is matched exactly against the
+      // registry, so a path is never used to pick a directory.
+      const [, first, ...rest] = url.pathname.split("/");
+      const target = targets.find((t) => t.name === first);
+      if (!target) {
         res.writeHead(404).end("not found");
         return;
       }
-
-      try {
-        const overview = await buildOverview(loaded);
-        const html = renderPage(overview, scanRuns(target), token);
-        res.writeHead(200, {
-          "content-type": "text/html; charset=utf-8",
-          // The buttons are the reason: framed by another site, a click on
-          // "ready" there would be a click on this page.
-          "content-security-policy": "frame-ancestors 'none'",
-          "x-frame-options": "DENY",
-        }).end(html);
-      } catch (error) {
-        res
-          .writeHead(500, { "content-type": "text/plain; charset=utf-8" })
-          .end(error instanceof Error ? error.message : String(error));
+      if (rest.length === 0) {
+        // The page's own links are absolute, but the browser resolves a bare
+        // `/<name>` relative to `/`; send it to the canonical form.
+        res.writeHead(302, { location: `/${first}/` }).end();
+        return;
       }
+      return handleTarget(target.loaded, `/${first}`, token, req, res, url, `/${rest.join("/")}`);
     })();
   });
 
@@ -184,7 +179,9 @@ export async function serveDashboard(loaded: LoadedConfig, opts: DashboardOption
   }
 
   const loopback = host === "127.0.0.1" || host === "::1" || host === "localhost";
-  info(`${bold("dashboard")} ${cyan(`http://${host.includes(":") ? `[${host}]` : host}:${port}`)} ${dim("— ctrl-c to stop")}`);
+  const origin = `http://${host.includes(":") ? `[${host}]` : host}:${port}`;
+  info(`${bold("dashboard")} ${cyan(origin)} ${dim("— ctrl-c to stop")}`);
+  if (multi) for (const t of targets) info(`  ${t.name.padEnd(20)} ${cyan(`${origin}/${t.name}/`)}`);
   if (!loopback) {
     // Say it plainly rather than in a doc nobody re-reads: the network is the
     // whole access control here.
@@ -194,6 +191,134 @@ export async function serveDashboard(loaded: LoadedConfig, opts: DashboardOption
     );
   }
   await new Promise(() => {}); // serve until interrupted
+}
+
+/**
+ * One target's routes, relative to `base`. `path` is the part of the URL
+ * after the prefix, so the handlers are the same whether or not there is one.
+ */
+async function handleTarget(
+  loaded: LoadedConfig,
+  base: string,
+  token: string,
+  req: IncomingMessage,
+  res: ServerResponse,
+  url: URL,
+  path: string,
+): Promise<void> {
+  const target = loaded.config.target.name;
+  if (path === "/api/action") {
+    return handleAction(loaded, token, req, res);
+  }
+  if (path === "/api/handoff") {
+    if (!authorised(req, token)) return json(res, 403, { ok: false, message: "Reload the page — its token is stale." });
+    const issue = Number(url.searchParams.get("issue"));
+    if (!Number.isInteger(issue) || issue <= 0) return json(res, 400, { ok: false, message: "bad issue" });
+    const found = handoffInfo(loaded, issue);
+    return found
+      ? json(res, 200, { ok: true, handoff: found })
+      : json(res, 404, { ok: false, message: `No handoff worktree with a HANDOFF.md for #${issue} on this machine.` });
+  }
+  if (path === "/api/log") {
+    return handleLog(target, token, req, url, res);
+  }
+  if (path === "/api/status") {
+    if (!authorised(req, token)) return json(res, 403, { ok: false, message: "Reload the page — its token is stale." });
+    try {
+      return json(res, 200, { ok: true, status: await targetStatus(loaded) });
+    } catch (error) {
+      return json(res, 500, { ok: false, message: error instanceof Error ? error.message : String(error) });
+    }
+  }
+  if (path.startsWith("/evidence/")) {
+    return serveEvidence(resolve(runsDir(target)), path, res);
+  }
+  if (path !== "/") {
+    res.writeHead(404).end("not found");
+    return;
+  }
+
+  try {
+    const overview = await buildOverview(loaded);
+    const html = renderPage(overview, scanRuns(target), token, base);
+    res.writeHead(200, {
+      "content-type": "text/html; charset=utf-8",
+      // The buttons are the reason: framed by another site, a click on
+      // "ready" there would be a click on this page.
+      "content-security-policy": "frame-ancestors 'none'",
+      "x-frame-options": "DENY",
+    }).end(html);
+  } catch (error) {
+    res
+      .writeHead(500, { "content-type": "text/plain; charset=utf-8" })
+      .end(error instanceof Error ? error.message : String(error));
+  }
+}
+
+/**
+ * The `--all` front page: every target, with the same counts `status --json`
+ * prints. One target's GitHub being unreachable shows as a row saying so,
+ * not as a blank page for all of them.
+ */
+async function serveIndex(targets: Mounted[], token: string, req: IncomingMessage, res: ServerResponse, url: URL): Promise<void> {
+  const rows = await Promise.all(
+    targets.map(async (t): Promise<{ name: string; status: TargetStatus | null; error: string | null }> => {
+      try {
+        return { name: t.name, status: await targetStatus(t.loaded), error: null };
+      } catch (error) {
+        return { name: t.name, status: null, error: error instanceof Error ? error.message : String(error) };
+      }
+    }),
+  );
+  if (url.searchParams.get("format") === "json") {
+    if (!authorised(req, token)) return json(res, 403, { ok: false, message: "token" });
+    return json(res, 200, { ok: true, targets: rows });
+  }
+  res.writeHead(200, {
+    "content-type": "text/html; charset=utf-8",
+    "content-security-policy": "frame-ancestors 'none'",
+    "x-frame-options": "DENY",
+  }).end(renderIndex(rows));
+}
+
+function renderIndex(rows: Array<{ name: string; status: TargetStatus | null; error: string | null }>): string {
+  const esc = (s: string): string => s.replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
+  const columns: Array<[keyof TargetStatus["counts"], string]> = [
+    ["needsYou", "need you"], ["needsInfo", "needs info"], ["reproduced", "reproduced"], ["agentReady", "agent-ready"],
+    ["inProgress", "in progress"], ["prReady", "PRs open"],
+  ];
+  const cell = (n: number): string => `<td class="num${n > 0 ? " on" : ""}">${n}</td>`;
+  return `<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>feedback-loop — all targets</title>
+<style>
+:root { --bg: #fbfbfa; --panel: #fff; --ink: #1a1a18; --muted: #6b6b66; --line: #e4e4e0; --accent: #2f6f4e; --bad: #a33a2a; }
+@media (prefers-color-scheme: dark) { :root { --bg: #161715; --panel: #1e201d; --ink: #eceae4; --muted: #9a9a92; --line: #2e312d; --accent: #7fc09b; --bad: #e08472; } }
+body { margin: 0; background: var(--bg); color: var(--ink); font: 15px/1.55 ui-sans-serif, -apple-system, "Segoe UI", system-ui, sans-serif; }
+.wrap { max-width: 1080px; margin: 0 auto; padding: 32px 16px 80px; }
+h1 { font-size: 20px; margin: 0 0 2px; } .sub { color: var(--muted); font-size: 13px; margin-bottom: 24px; }
+table { width: 100%; border-collapse: collapse; background: var(--panel); border: 1px solid var(--line); border-radius: 10px; overflow: hidden; }
+th, td { padding: 10px 12px; text-align: left; border-top: 1px solid var(--line); }
+th { font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--muted); border-top: 0; }
+td.num { text-align: right; font-variant-numeric: tabular-nums; color: var(--muted); }
+td.num.on { color: var(--ink); font-weight: 600; }
+a { color: inherit; } .repo { color: var(--muted); font-size: 13px; } .bad { color: var(--bad); font-size: 13px; }
+.run { color: var(--accent); font-size: 12px; }
+</style></head><body><div class="wrap">
+<h1>feedback-loop</h1>
+<div class="sub">${rows.length} target${rows.length === 1 ? "" : "s"} · each row is what <code>status --json</code> says</div>
+<table><thead><tr><th>target</th>${columns.map(([, label]) => `<th style="text-align:right">${esc(label)}</th>`).join("")}</tr></thead><tbody>
+${rows
+  .map((r) =>
+    r.status
+      ? `<tr><td><a href="/${encodeURIComponent(r.name)}/"><b>${esc(r.name)}</b></a> <span class="repo">${esc(r.status.repo)}</span>${
+          r.status.running.length > 0 ? `<div class="run">🔧 ${esc(r.status.running.map((x) => `${x.verb} #${x.issue ?? "?"}`).join(", "))}</div>` : ""
+        }</td>${columns.map(([key]) => cell(r.status!.counts[key])).join("")}</tr>`
+      : `<tr><td><a href="/${encodeURIComponent(r.name)}/"><b>${esc(r.name)}</b></a><div class="bad">${esc(r.error ?? "unavailable")}</div></td>${columns.map(() => `<td class="num">–</td>`).join("")}</tr>`,
+  )
+  .join("\n")}
+</tbody></table>
+</div></body></html>`;
 }
 
 function json(res: ServerResponse, status: number, body: unknown): void {
@@ -270,7 +395,7 @@ function serveEvidence(root: string, pathname: string, res: ServerResponse): voi
   createReadStream(file).pipe(res);
 }
 
-async function buildOverview(loaded: LoadedConfig): Promise<Overview> {
+export async function buildOverview(loaded: LoadedConfig): Promise<Overview> {
   const { config } = loaded;
   const labels = config.github.labels;
   const github = new GitHubClient(
@@ -278,7 +403,7 @@ async function buildOverview(loaded: LoadedConfig): Promise<Overview> {
     config.github.tokenFile ? readSecret(config.github.tokenFile, "GITHUB_TOKEN") : undefined,
   );
 
-  const [fromChat, agentReady, readyToFix, needsDecision, runFailed, queued, humanOwned, prs] = await Promise.all([
+  const [fromChat, agentReady, readyToFix, needsDecision, runFailed, queued, humanOwned, prs, needsInfo, inProgress] = await Promise.all([
     github.listIssues({ labels: [labels.source], state: "open" }),
     github.listIssues({ labels: [labels.agentReady], state: "open" }),
     github.listIssues({ labels: [labels.readyToFix], state: "open" }),
@@ -287,6 +412,8 @@ async function buildOverview(loaded: LoadedConfig): Promise<Overview> {
     github.listIssues({ labels: [labels.requested], state: "open" }),
     github.listIssues({ labels: [HUMAN_OWNED], state: "open" }),
     github.listPullRequests({ state: "open" }),
+    github.listIssues({ labels: [labels.needsInfo], state: "open" }),
+    github.listIssues({ labels: ["in-progress"], state: "open" }),
   ]);
   // Most recently closed first is how gh returns them; a hundred is enough to
   // fill the list after the filter below drops issues the loop never saw.
@@ -321,7 +448,15 @@ async function buildOverview(loaded: LoadedConfig): Promise<Overview> {
     running: running.find((r) => r.issue === issue.number)?.what ?? null,
     hasLog: latestLog(config.target.name, issue.number) !== null,
     asked: asked.get(issue.number) || null,
+    worktree: worktreeOf(issue),
   });
+  // Only a handed-off issue has a worktree a person is in; looking for one on
+  // every row would read every HANDOFF.md once per issue.
+  function worktreeOf(issue: Issue): IssueRow["worktree"] {
+    if (!issue.labels.some((l) => l.name === HUMAN_OWNED)) return null;
+    const found = handoffInfo(loaded, issue.number);
+    return found ? { path: found.path, agentdeck: agentdeckLink(config, found.path) } : null;
+  }
 
   const today = new Date().toISOString().slice(0, 10);
   const spentToday = readRunLog(config.target.name, 500)
@@ -361,9 +496,11 @@ async function buildOverview(loaded: LoadedConfig): Promise<Overview> {
     canRun: loaded.repoPath !== null || resolveRole(config) === "intake",
     agentPrs: prs
       .filter((pr) => (pr.labels ?? []).some((l) => l.name === labels.agentPr))
-      .map((pr) => ({ number: pr.number, url: pr.url, title: pr.title })),
-    running: running.map((r) => ({ what: r.what, at: r.at, issue: r.issue ?? null })),
+      .map((pr) => ({ number: pr.number, url: pr.url, title: pr.title, issue: issueOfPullRequest(pr) })),
+    running: running.map((r) => ({ what: r.what, at: r.at, issue: r.issue ?? null, pid: r.pid })),
     spentToday,
     dailyBudgetUsd: config.worker.dailyBudgetUsd,
+    needsInfo: needsInfo.filter(ours).length,
+    inProgress: inProgress.filter(ours).length,
   };
 }

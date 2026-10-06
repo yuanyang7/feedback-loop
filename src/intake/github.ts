@@ -24,6 +24,7 @@ export interface PullRequest {
   state: "OPEN" | "MERGED" | "CLOSED";
   headRefName: string;
   labels?: Array<{ name: string }>;
+  body?: string;
 }
 
 export class GitHubClient {
@@ -129,7 +130,7 @@ export class GitHubClient {
       "pr", "list", "--repo", this.repo,
       "--state", opts.state ?? "open",
       "--limit", String(opts.limit ?? 100),
-      "--json", "number,title,url,state,headRefName,labels",
+      "--json", "number,title,url,state,headRefName,labels,body",
     ]);
     return JSON.parse(out) as PullRequest[];
   }
@@ -155,4 +156,16 @@ export class GitHubClient {
       headRefName: "",
     };
   }
+}
+
+/**
+ * The issue a worker's pull request is for. The branch is `fix/issue-<n>-…`
+ * and the body says `Closes #n`; either is enough, and a PR with neither was
+ * not opened by a run.
+ */
+export function issueOfPullRequest(pr: PullRequest): number | null {
+  const fromBranch = /issue-(\d+)/.exec(pr.headRefName ?? "")?.[1];
+  const fromBody = /\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\s+#(\d+)/i.exec(pr.body ?? "")?.[1];
+  const n = Number(fromBranch ?? fromBody);
+  return Number.isInteger(n) && n > 0 ? n : null;
 }

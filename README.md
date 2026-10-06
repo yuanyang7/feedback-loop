@@ -24,7 +24,9 @@ See [DESIGN.md](DESIGN.md) § 8 for the build order and why fixing came last.
 |---|---|
 | ✅ | `intake` — chat messages → deduped GitHub issues, with reactions |
 | ✅ | `reconcile` — chat reactions catch up to GitHub state |
-| ✅ | `status` — queue, caps, recent runs |
+| ✅ | `status` — queue, caps, recent runs; `--json` for scripts |
+| ✅ | `report` — file a report by hand, from a terminal or anything that shells out to one |
+| ✅ | `targets`, `tick --all`, `dashboard --all` — many repos from one machine |
 | ✅ | two model backends — the `claude` CLI you already have, or an API key |
 | ✅ | `triage` — reproduce + size, never edits source |
 | ✅ | `fix` — implement → adversarial review → PR, never merges |
@@ -33,7 +35,10 @@ See [DESIGN.md](DESIGN.md) § 8 for the build order and why fixing came last.
 
 ## Setup
 
-Requires Node 20+, the [`gh`](https://cli.github.com) CLI logged in, and a Discord bot token.
+Requires Node 20+ and the [`gh`](https://cli.github.com) CLI logged in. A Discord bot token is
+optional: without a `discord` section in the config there is no chat intake, no reconcile and no
+chat commands, and reports come in through `report` instead (below). The worker, the gate,
+`status`, `handoff` and the dashboard are the same either way.
 
 For the model call, pick a backend in `intake.backend`:
 
@@ -97,10 +102,76 @@ The first real run adopts the newest message as its cursor and files nothing, so
 doesn't dump your channel history into your issue tracker. Pass `--backfill 50` to deliberately
 include recent history.
 
+### Filing a report by hand
+
+Not every report comes from a channel. `report` files one straight from a terminal — or from
+whatever shells out to it: a hub page, an editor command, agentdeck.
+
+```bash
+feedback-loop report . --title "Login button is blank on iOS" \
+  --body "Steps: open the app cold, tap Sign in." --severity medium --size s
+feedback-loop report . --title "…" --body-file notes.md --source hub --json
+```
+
+It creates the issue intake would have created — same title prefix, same `from-discord` source
+label, `severity:*` and `size:*` if you give them — with no model call and no dedupe: the person
+filing has the open issues in front of them. The footer names a `source` (`cli` by default)
+instead of chat message ids, so reconcile and the workers' reactions leave it alone.
+
+`--ready` additionally applies `agent-ready`. That label is the human gate — intake never
+applies it, and `triage` never grants it — so passing `--ready` is you, the reporter, saying this
+report is safe to hand to an agent. Leave it off and the issue waits for `ready <issue>` like any
+other.
+
+`--json` prints one object and nothing else on stdout, for the caller to parse:
+
+```json
+{ "number": 1240, "url": "https://github.com/owner/app/issues/1240", "target": "my-app" }
+```
+
+## Many repos
+
+One target is a path. Several are a registry — `~/.feedback-loop/targets.json` — so that a
+scheduler and the dashboard have one list between them rather than one each:
+
+```bash
+feedback-loop targets add /path/to/repo      # reads target.name from its config; refuses duplicates
+feedback-loop targets list
+feedback-loop targets remove my-app          # forgets it; the repo and its state are untouched
+```
+
+`init` registers the new target as it scaffolds it. Then:
+
+```bash
+feedback-loop tick --all                     # every target in turn; --role applies to all
+feedback-loop dashboard --all --port 7777    # an index at /, each target at /<name>/
+```
+
+One target failing its tick is logged and does not stop the others; the exit code is non-zero if
+any failed, so launchd or cron still sees it. `tick --all` runs the targets in order, not in
+parallel: a tick is cheap, and two intake passes racing on one machine is what the single-writer
+cursor rule exists to prevent.
+
+`status --json` is the same numbers as the dashboard index, for one target, as one object:
+
+```json
+{
+  "target": "my-app", "repo": "owner/app", "dashboardUrl": "http://localhost:7777/my-app/",
+  "counts": { "needsYou": 1, "needsInfo": 0, "reproduced": 2, "agentReady": 3,
+              "inProgress": 1, "prReady": 1, "needsDecision": 1 },
+  "running": [{ "issue": 1210, "verb": "go", "pid": 4242, "startedAt": "2026-10-05T01:00:00.000Z" }],
+  "prs": [{ "number": 88, "url": "…", "title": "fix: …", "issue": 1209 }]
+}
+```
+
+`dashboardUrl` is `dashboard.url` from the config, or null. `needsYou` is `needs-decision` plus
+`run-failed` — everything waiting on a person; `needsDecision` is the first alone.
+
 ## Looking at what a run did
 
 ```bash
 feedback-loop dashboard /path/to/your/repo    # http://localhost:7777
+feedback-loop dashboard --all                 # every registered target; index at /, pages at /<name>/
 ```
 
 Derived entirely from `~/.feedback-loop` and the GitHub labels — it holds no state of its own, so it
@@ -109,7 +180,12 @@ side, and each count at the top (need you, reproduced, agent-ready, handed off, 
 issues behind it. Every issue carries the chat commands that apply to it as buttons — `ready`,
 `triage`, `fix`, `go`, hand off / hand back — plus its latest worker log. The buttons go through the
 same gates, concurrency limit and queue as the chat commands, and only the page the server rendered
-can press them (a per-process token, and requests for any other `Host` are refused).
+can press them (a per-process token, and requests for any other `Host` are refused). Under `--all`
+the token and the `Host` check are still per process — one origin, however many targets — and each
+target's page, API and evidence files live under its own `/<name>/` prefix.
+
+A handed-off issue shows its worktree, and — with `agentdeck.url` set in the config — an "open in
+agentdeck" link to it, the same one `handoff` prints.
 
 Schedule `tick` however you like — launchd, cron, a loop. It is idempotent and cheap.
 
@@ -335,6 +411,9 @@ See the generated `.feedback-loop/config.yml` for all options. The ones that mat
 | `worker.maxOpenPRs` | `3` | The worker stops until you drain the queue |
 | `worker.dailyBudgetUsd` | `15` | Hard stop |
 | `worker.denyPaths` | schema, migrations, auth, payments, CI, release | Never auto-fixed |
+| `discord` | — | Optional. Omit it, or `discord: null`, for a repo with no chat: intake, reconcile and chat commands are off; `report` is the way in |
+| `dashboard.url` | — | Optional. Where this target's dashboard is served; `status --json` reports it as `dashboardUrl` |
+| `agentdeck.url` | — | Optional. With it set, `handoff` and the dashboard link a handed-off worktree as `<url>/#dir=<worktree>` |
 
 `.feedback-loop/playbook.md` is appended to the worker's system prompt — how to set up a working
 copy, reproduce a bug, verify a fix, and open a PR in *your* repo. That's the whole integration

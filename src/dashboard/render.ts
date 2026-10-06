@@ -15,6 +15,8 @@ export interface IssueRow {
   hasLog: boolean;
   /** For an escalated issue, the loop's last comment on it. */
   asked: string | null;
+  /** For a handed-off issue with a worktree here: where, and how to open it. */
+  worktree: { path: string; agentdeck: string | null } | null;
 }
 
 export interface IssueGroup {
@@ -31,10 +33,13 @@ export interface Overview {
   groups: IssueGroup[];
   /** False when this process has no checkout to start a run in. */
   canRun: boolean;
-  agentPrs: Array<{ number: number; url: string; title: string }>;
-  running: Array<{ what: string; at: string; issue: number | null }>;
+  agentPrs: Array<{ number: number; url: string; title: string; issue: number | null }>;
+  running: Array<{ what: string; at: string; issue: number | null; pid: number }>;
   spentToday: number;
   dailyBudgetUsd: number;
+  /** Open issues labelled needs-info / in-progress — counted for `status`, not grouped. */
+  needsInfo: number;
+  inProgress: number;
 }
 
 const CSS = `
@@ -73,6 +78,8 @@ button.stat:disabled { cursor: default; opacity: 0.55; }
 .issue:first-child { border-top: 0; }
 .issue .title { flex: 1 1 260px; min-width: 0; }
 .chips { display: inline-flex; gap: 4px; flex-wrap: wrap; margin-left: 6px; vertical-align: 1px; }
+.wt { display: block; font-size: 12px; color: var(--muted); }
+.up { color: var(--muted); text-decoration: none; font-weight: 400; }
 .chip { font-size: 10.5px; padding: 1px 6px; border-radius: 20px; background: var(--bg);
   border: 1px solid var(--line); color: var(--muted); }
 .acts { display: flex; gap: 6px; flex-wrap: wrap; }
@@ -144,7 +151,12 @@ dd > details[open] > summary { color: var(--ink); }
 @media (max-width: 680px) { .shots { grid-template-columns: 1fr; } }
 `;
 
-export function renderPage(overview: Overview, runs: RunSummary[], token: string): string {
+/**
+ * `base` is the path this target's page is mounted at — "" on its own, or
+ * "/<target>" under `--all` — and every link and fetch on the page is built
+ * from it. Relative links would break the moment two targets share a server.
+ */
+export function renderPage(overview: Overview, runs: RunSummary[], token: string, base = ""): string {
   const rows = new Map<number, IssueRow>();
   for (const group of overview.groups) for (const issue of group.issues) rows.set(issue.number, issue);
 
@@ -154,7 +166,7 @@ export function renderPage(overview: Overview, runs: RunSummary[], token: string
 <title>feedback-loop — ${esc(overview.target)}</title>
 <style>${CSS}</style></head>
 <body><div class="wrap">
-  <h1>${esc(overview.target)}</h1>
+  <h1>${base ? `<a href="/" class="up" title="all targets">all</a> › ` : ""}${esc(overview.target)}</h1>
   <div class="sub">${esc(overview.repo)} · view of <code>~/.feedback-loop</code> and the GitHub queue · click a number to list it</div>
 
   <div class="stats">
@@ -180,7 +192,7 @@ export function renderPage(overview: Overview, runs: RunSummary[], token: string
     .join("")}</div>` : ""}
 
   <h2>Runs</h2>
-  ${runs.length === 0 ? '<p class="empty">No runs yet.</p>' : runs.map((run) => renderRun(run, overview, rows)).join("")}
+  ${runs.length === 0 ? '<p class="empty">No runs yet.</p>' : runs.map((run) => renderRun(run, overview, rows, base)).join("")}
 </div>
 <dialog id="log"><header><b id="log-title">log</b><span class="num" id="log-state"></span><span class="grow"></span>
   <button class="act" id="log-close">close</button></header><pre id="log-text"></pre></dialog>
@@ -189,12 +201,13 @@ export function renderPage(overview: Overview, runs: RunSummary[], token: string
   <div class="ho-body">
     <div class="ho-row"><span class="num">worktree</span><code id="ho-path"></code><button class="act" data-copy="ho-path">copy</button></div>
     <div class="ho-row"><span class="num">branch</span><code id="ho-branch"></code></div>
+    <div class="ho-row" id="ho-deck-row" hidden><span class="num">agentdeck</span><a id="ho-deck" target="_blank" rel="noopener">open in agentdeck</a></div>
     <h4>Prompt for an agent <button class="act primary" data-copy="ho-prompt">copy prompt</button></h4>
     <pre id="ho-prompt"></pre>
     <h4>Or start one from a terminal <button class="act" data-copy="ho-command">copy command</button></h4>
     <pre id="ho-command"></pre>
   </div></dialog>
-<script>const TOKEN = ${JSON.stringify(token)};${SCRIPT}</script>
+<script>const TOKEN = ${JSON.stringify(token)}; const BASE = ${JSON.stringify(base)};${SCRIPT}</script>
 </body></html>`;
 }
 
@@ -252,7 +265,9 @@ function renderIssue(issue: IssueRow, overview: Overview, answerable = false, cl
   return `<div class="issue">
     <span class="title"><a href="${esc(issue.url)}" target="_blank" rel="noopener"><b>#${issue.number}</b></a> ${esc(issue.title)}
       ${issue.running ? `<span class="tag ok">${esc(issue.running)}</span>` : ""}
-      <span class="chips">${chips}</span></span>
+      <span class="chips">${chips}</span>
+      ${issue.worktree ? `<span class="wt"><code title="${esc(issue.worktree.path)}">${esc(issue.worktree.path.split("/").at(-1) ?? issue.worktree.path)}</code>${
+        issue.worktree.agentdeck ? ` · <a href="${esc(issue.worktree.agentdeck)}" target="_blank" rel="noopener">open in agentdeck</a>` : ""}</span>` : ""}</span>
     ${closed ? (issue.hasLog ? `<div class="acts">${button("log", issue.number)}</div>` : "") : actionsFor(issue, overview)}
     ${answerable && !issue.labels.includes(overview.labels.humanOwned) ? answerBox(issue, overview) : ""}
   </div>`;
@@ -271,7 +286,7 @@ function answerBox(issue: IssueRow, overview: Overview): string {
   </form>`;
 }
 
-function renderRun(run: RunSummary, overview: Overview, rows: Map<number, IssueRow>): string {
+function renderRun(run: RunSummary, overview: Overview, rows: Map<number, IssueRow>, base: string): string {
   const outcome = outcomeOf(run);
   const shots = run.evidence.filter((e) => !e.single);
   const row = run.issue ? rows.get(run.issue) : undefined;
@@ -288,10 +303,10 @@ function renderRun(run: RunSummary, overview: Overview, rows: Map<number, IssueR
   </summary>
   <div class="run-body">
     ${run.issue ? `<div class="run-acts">${row ? actionsFor(row, overview) : `<div class="acts">${button("log", run.issue)}</div>`}</div>` : ""}
-    ${shots.length > 0 ? shots.map((e) => renderPair(run, e)).join("") : ""}
+    ${shots.length > 0 ? shots.map((e) => renderPair(run, e, base)).join("") : ""}
     ${run.phases.map((p) => renderPhase(run, p)).join("")}
     ${run.attachments.length > 0 ? `<h2>Attachments</h2><ul class="files">${run.attachments
-      .map((f) => `<li><a href="/evidence/${esc(run.id)}/${encodeURIComponent(f)}">${esc(f)}</a></li>`)
+      .map((f) => `<li><a href="${base}/evidence/${esc(run.id)}/${encodeURIComponent(f)}">${esc(f)}</a></li>`)
       .join("")}</ul>` : ""}
     ${run.readme ? `<h2>The run's own notes</h2><pre>${esc(run.readme)}</pre>` : ""}
   </div>
@@ -347,7 +362,7 @@ async function showLog(issue) {
   const load = async () => {
     let body;
     try {
-      const res = await fetch("/api/log?issue=" + issue, { headers: { "x-feedback-loop-token": TOKEN } });
+      const res = await fetch(BASE + "/api/log?issue=" + issue, { headers: { "x-feedback-loop-token": TOKEN } });
       body = await res.json();
     } catch (error) {
       body = { ok: false, message: "Couldn't load the log: " + error };
@@ -381,7 +396,7 @@ document.addEventListener("submit", async (event) => {
   const buttons = [...form.querySelectorAll("button")];
   buttons.forEach((b) => (b.disabled = true));
   try {
-    const res = await fetch("/api/action", {
+    const res = await fetch(BASE + "/api/action", {
       method: "POST",
       headers: { "content-type": "application/json", "x-feedback-loop-token": TOKEN },
       body: JSON.stringify({ action: "decide", issue, text, then }),
@@ -397,6 +412,8 @@ function showHandoff(h) {
   $("#ho-title").textContent = "#" + h.issue + " is yours";
   $("#ho-path").textContent = h.path;
   $("#ho-branch").textContent = h.branch || "(unknown)";
+  $("#ho-deck-row").hidden = !h.agentdeck;
+  if (h.agentdeck) $("#ho-deck").href = h.agentdeck;
   $("#ho-prompt").textContent = h.prompt;
   $("#ho-command").textContent = h.command;
   $("#handoff").showModal();
@@ -417,7 +434,7 @@ document.addEventListener("click", async (event) => {
   } catch { toast("Couldn't copy — select the text instead.", true); }
 });
 async function fetchHandoff(issue) {
-  const res = await fetch("/api/handoff?issue=" + issue, { headers: { "x-feedback-loop-token": TOKEN } });
+  const res = await fetch(BASE + "/api/handoff?issue=" + issue, { headers: { "x-feedback-loop-token": TOKEN } });
   const body = await res.json().catch(() => ({ ok: false, message: "HTTP " + res.status }));
   if (body.ok) showHandoff(body.handoff); else toast(body.message, true);
 }
@@ -435,7 +452,7 @@ document.addEventListener("click", async (event) => {
   const label = b.textContent;
   b.textContent = "…";
   try {
-    const res = await fetch("/api/action", {
+    const res = await fetch(BASE + "/api/action", {
       method: "POST",
       headers: { "content-type": "application/json", "x-feedback-loop-token": TOKEN },
       body: JSON.stringify({ action, issue }),
@@ -474,8 +491,8 @@ function value(text: string): string {
   return `<details><summary>${esc(text.slice(0, 200))}…</summary><div class="more">${esc(text)}</div></details>`;
 }
 
-function renderPair(run: RunSummary, pair: EvidencePair): string {
-  const src = (f: string): string => `/evidence/${esc(run.id)}/${encodeURIComponent(f)}`;
+function renderPair(run: RunSummary, pair: EvidencePair, base: string): string {
+  const src = (f: string): string => `${base}/evidence/${esc(run.id)}/${encodeURIComponent(f)}`;
   return `<div class="pair"><h4>${esc(pair.label.replace(/[-_]/g, " "))}</h4>
     <div class="shots">
       ${pair.before ? `<figure><figcaption>before</figcaption><a href="${src(pair.before)}"><img src="${src(pair.before)}" alt="before ${esc(pair.label)}" loading="lazy"></a></figure>` : ""}

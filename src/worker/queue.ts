@@ -135,7 +135,7 @@ export async function readQueue(github: GitHubClient, config: Config): Promise<R
         const found = decode(body);
         if (found) return { ...found, issue: issue.number };
       }
-      return { issue: issue.number, kind: "go", channel: config.discord.channelId, message: null, by: "label", at: "" };
+      return { issue: issue.number, kind: "go", channel: config.discord?.channelId ?? "", message: null, by: "label", at: "" };
     }),
   );
   // A request with no timestamp came from a bare label, so it has no place in

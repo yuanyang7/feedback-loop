@@ -18,6 +18,10 @@ import { STATE_EMOJI } from "./intake/emoji.js";
 import { readSecret } from "./core/config.js";
 import { GitHubClient } from "./intake/github.js";
 import { readQueue } from "./worker/queue.js";
+import { fileReport, parseReportArgs } from "./intake/report.js";
+import { targetStatus } from "./dashboard/summary.js";
+import { addTarget, loadTarget, readTargets, removeTarget, targetsPath, type TargetEntry } from "./core/targets.js";
+import type { Mounted } from "./dashboard/server.js";
 
 const USAGE = `feedback-loop — chat feedback in, reviewed pull requests out.
 
@@ -26,14 +30,20 @@ Usage:
   feedback-loop intake [dir]          One intake tick: new messages -> issues
   feedback-loop reconcile [dir]       Sync chat reactions with GitHub state
   feedback-loop tick [dir]            Run the stages this host's role covers
+  feedback-loop tick --all            The same, for every registered target in turn
+  feedback-loop report [dir] --title "…"  File a report by hand, as the issue intake would make
   feedback-loop pickup [dir]          Start the next queued run, if there is room
   feedback-loop triage [dir]          Reproduce + size one agent-ready issue (never fixes)
   feedback-loop fix [dir]             Fix + adversarial review + open a PR (never merges)
   feedback-loop go [dir] --issue N    triage + fix + PR in one run (still never merges)
   feedback-loop handoff [dir] --issue N  Take one issue off the loop and work on it yourself
   feedback-loop queue [dir]           What runs next, in order, and what is held back
-  feedback-loop status [dir]          Queue counts, recent runs, and caps
+  feedback-loop status [dir]          Queue counts, recent runs, and caps (--json for one object)
   feedback-loop dashboard [dir]       Local page: queue groups with command buttons, runs, screenshots
+  feedback-loop dashboard --all       One server: an index at /, each registered target at /<name>/
+  feedback-loop targets list          Registered targets (~/.feedback-loop/targets.json)
+  feedback-loop targets add <dir>     Register a repo (or --config PATH) by its target.name
+  feedback-loop targets remove NAME   Forget it; the repo and its state are left alone
   feedback-loop watch [dir] --issue N Follow a running phase as it happens
   feedback-loop labels [dir]          Create the labels this tool expects
 
@@ -41,6 +51,16 @@ Options:
   --dry-run        Classify and print; create nothing, react to nothing
   --backfill N     On a fresh cursor, process the last N messages (default: skip history)
   --issue N        triage/fix/handoff: act on this issue instead of picking one
+  --all            tick/dashboard: every target in the registry, not one dir
+  --json           status/report: machine-readable output on stdout, nothing else
+  --title T        report: the issue title (required)
+  --body B         report: the issue body; or --body-file PATH to read it
+  --severity S     report: low | medium | high -> severity:S label
+  --size S         report: s | m | l -> size:S label
+  --ready          report: also apply agent-ready. This is the human gate —
+                   you, the reporter, are clearing it for an autonomous run.
+  --source NAME    report: where it came from — cli (default), hub, agentdeck…
+                   Goes in the issue footer; reconcile leaves such issues alone.
   --slug NAME      handoff: worktree directory name (default: manual-<n>-<title>)
   --prefix P       handoff: branch prefix, e.g. fix (default: fix)
   --no-worktree    handoff: claim the issue only; make the worktree yourself
@@ -71,7 +91,10 @@ async function main(): Promise<number> {
   const argv = process.argv.slice(2);
   const command = argv[0];
   const flags = new Set(argv.filter((a) => a.startsWith("--")));
-  const valueFlags = new Set(["--backfill", "--issue", "--announce", "--announce-message", "--port", "--config", "--role", "--host", "--allow-host"]);
+  const valueFlags = new Set([
+    "--backfill", "--issue", "--announce", "--announce-message", "--port", "--config", "--role", "--host", "--allow-host",
+    "--title", "--body", "--body-file", "--severity", "--size", "--source", "--slug", "--prefix",
+  ]);
   const positional = argv.slice(1).filter((a, i) => {
     if (a.startsWith("--")) return false;
     const previous = argv.slice(1)[i - 1];
@@ -119,45 +142,10 @@ async function main(): Promise<number> {
       return 0;
     }
     case "tick": {
-      const loaded = load();
-      const role = resolveRole(loaded.config, roleFlag);
-
-      // One being unreachable used to take the whole tick with it, so a
-      // Discord outage also stopped reactions catching up and work being
-      // picked up — neither of which it has anything to do with.
-      let failures = 0;
-      const attempt = async (what: string, fn: () => Promise<void>): Promise<void> => {
-        try {
-          await fn();
-        } catch (error) {
-          failures += 1;
-          warn(`${what} failed: ${error instanceof Error ? error.message : String(error)}`);
-        }
-      };
-
-      // A worker host reads no chat at all. The Discord cursor is a
-      // single-writer value: two hosts polling would each advance it past
-      // messages the other never saw, and reports would vanish at random.
-      if (role !== "worker") {
-        await attempt("intake", () => runIntake(loaded, { dryRun, backfill, role: intakeRole(role) }));
-        await attempt("reconcile", () => runReconcile(loaded, { dryRun }));
+      if (flags.has("--all")) {
+        return everyTarget("tick", (loaded) => tick(loaded, roleFlag, dryRun, backfill));
       }
-
-      // Reconcile first: a merge that just freed a slot has to be visible
-      // before we decide whether there is room for another run.
-      if (role === "intake") {
-        // Adopt first: a request labelled by hand has no detail, and no
-        // worker host can add it. Then consider promoting new work.
-        await attempt("adopting", () => tendQueue(loaded, dryRun));
-        await attempt("queueing", () => promoteAutoWork(loaded, dryRun));
-      } else {
-        await attempt("pickup", () => pickUpWork(loaded, dryRun, role));
-      }
-
-      // Non-zero tells launchd, DSM's Task Scheduler, and anyone reading the
-      // log, that this tick did not do its job — without it a run of failures
-      // looks like a quiet week.
-      return failures > 0 ? 1 : 0;
+      return tick(load(), roleFlag, dryRun, backfill);
     }
     case "pickup": {
       const loaded = load();
@@ -234,8 +222,37 @@ async function main(): Promise<number> {
     }
     case "queue":
       return queue(load());
-    case "status":
-      return status(load());
+    case "status": {
+      if (!flags.has("--json")) return status(load());
+      // One object, nothing else on stdout: this is what a hub or a script
+      // reads, and a log line in front of it would make it not JSON.
+      console.log(JSON.stringify(await targetStatus(load()), null, 2));
+      return 0;
+    }
+    case "report": {
+      const parsed = parseReportArgs(argv.slice(1));
+      if (typeof parsed === "string") {
+        fail(`${parsed} ${dim('e.g. feedback-loop report . --title "Login button is blank" --severity medium')}`);
+        return 1;
+      }
+      const loaded = load();
+      const filed = await fileReport(loaded, parsed);
+      if (parsed.json) {
+        console.log(JSON.stringify({ number: filed.number, url: filed.url, target: filed.target }));
+        return 0;
+      }
+      if (parsed.dryRun) {
+        console.log(`\n${bold(`[dry-run] would file: ${filed.title}`)}\n${dim(filed.labels.join("  "))}\n${filed.body}\n`);
+        return 0;
+      }
+      info(`${green("filed")} ${bold(`#${filed.number}`)} ${filed.title} ${dim(filed.labels.join(" "))}`);
+      info(`  ${cyan(filed.url ?? "")}`);
+      if (parsed.ready) info(`  ${dim("cleared for an autonomous attempt — the next tick may pick it up, or run")} ${cyan(`feedback-loop go . --issue ${filed.number}`)}`);
+      else info(`  ${dim("not cleared for an agent; clear it with --ready next time, or")} ${cyan(`feedback-loop go . --issue ${filed.number}`)}`);
+      return 0;
+    }
+    case "targets":
+      return targets(argv.slice(1), positional);
     case "dashboard": {
       const p = argv.indexOf("--port");
       const h = argv.indexOf("--host");
@@ -243,11 +260,31 @@ async function main(): Promise<number> {
       // by more than one name, and being told "wrong host" with no hint of
       // which one it wanted is a bad ten minutes.
       const allowHosts = argv.flatMap((a, i) => (a === "--allow-host" ? [argv[i + 1]] : [])).filter((v): v is string => !!v);
-      await serveDashboard(load(), {
+      const options = {
         port: p >= 0 ? Number(argv[p + 1]) : 7777,
         host: h >= 0 ? argv[h + 1] : undefined,
         allowHosts,
-      });
+      };
+      if (!flags.has("--all")) {
+        await serveDashboard(load(), options);
+        return 0;
+      }
+      const registered = readTargets();
+      if (registered.length === 0) {
+        fail(`No targets registered. Add one with ${cyan("feedback-loop targets add /path/to/repo")}.`);
+        return 1;
+      }
+      // A target whose config will not load is left out with a line saying
+      // so, rather than taking the other targets' pages down with it.
+      const mounted: Mounted[] = [];
+      for (const entry of registered) {
+        try {
+          mounted.push({ name: entry.name, loaded: loadTarget(entry) });
+        } catch (error) {
+          warn(`${entry.name}: not mounted — ${error instanceof Error ? error.message : String(error)}`);
+        }
+      }
+      await serveDashboard(mounted, options);
       return 0;
     }
     case "labels":
@@ -256,6 +293,74 @@ async function main(): Promise<number> {
       console.log(USAGE);
       return command ? 1 : 0;
   }
+}
+
+/** One tick of one target. */
+async function tick(loaded: LoadedConfig, roleFlag: string | undefined, dryRun: boolean, backfill: number): Promise<number> {
+  const role = resolveRole(loaded.config, roleFlag);
+
+  // One being unreachable used to take the whole tick with it, so a
+  // Discord outage also stopped reactions catching up and work being
+  // picked up — neither of which it has anything to do with.
+  let failures = 0;
+  const attempt = async (what: string, fn: () => Promise<void>): Promise<void> => {
+    try {
+      await fn();
+    } catch (error) {
+      failures += 1;
+      warn(`${what} failed: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  };
+
+  // A worker host reads no chat at all. The Discord cursor is a
+  // single-writer value: two hosts polling would each advance it past
+  // messages the other never saw, and reports would vanish at random.
+  if (role !== "worker") {
+    await attempt("intake", () => runIntake(loaded, { dryRun, backfill, role: intakeRole(role) }));
+    await attempt("reconcile", () => runReconcile(loaded, { dryRun }));
+  }
+
+  // Reconcile first: a merge that just freed a slot has to be visible
+  // before we decide whether there is room for another run.
+  if (role === "intake") {
+    // Adopt first: a request labelled by hand has no detail, and no
+    // worker host can add it. Then consider promoting new work.
+    await attempt("adopting", () => tendQueue(loaded, dryRun));
+    await attempt("queueing", () => promoteAutoWork(loaded, dryRun));
+  } else {
+    await attempt("pickup", () => pickUpWork(loaded, dryRun, role));
+  }
+
+  // Non-zero tells launchd, DSM's Task Scheduler, and anyone reading the
+  // log, that this tick did not do its job — without it a run of failures
+  // looks like a quiet week.
+  return failures > 0 ? 1 : 0;
+}
+
+/**
+ * Run a verb over every registered target. One failing is reported and the
+ * rest still run — a tick is cheap and idempotent, and the target that broke
+ * is not a reason to leave the others' queues unattended — but the exit code
+ * remembers, so a scheduler sees it.
+ */
+async function everyTarget(verb: string, fn: (loaded: LoadedConfig, entry: TargetEntry) => Promise<number>): Promise<number> {
+  const targets = readTargets();
+  if (targets.length === 0) {
+    fail(`No targets registered. Add one with ${cyan("feedback-loop targets add /path/to/repo")}.`);
+    return 1;
+  }
+  let failed = 0;
+  for (const entry of targets) {
+    info(`${bold(verb)} ${cyan(entry.name)} ${dim(entry.path ?? entry.config)}`);
+    try {
+      if ((await fn(loadTarget(entry), entry)) !== 0) failed += 1;
+    } catch (error) {
+      failed += 1;
+      warn(`${entry.name}: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+  if (failed > 0) warn(`${failed} of ${targets.length} target(s) failed.`);
+  return failed > 0 ? 1 : 0;
 }
 
 /** The message a chat-started run edits as it progresses. */
@@ -277,8 +382,56 @@ function init(dir: string): number {
   }
   info(`${green("created")} ${configDir}/config.yml`);
   info(`${green("created")} ${configDir}/playbook.md`);
-  info(`Fill both in, then run ${cyan("feedback-loop intake --dry-run")}.`);
+  // Register it now, so `tick --all` and `dashboard --all` know about it
+  // without a second step. The name is the template's placeholder until the
+  // config is edited; re-run `targets add` after renaming it.
+  try {
+    const entry = addTarget({ repoPath: dir });
+    info(`${green("registered")} ${entry.name} in ${dim(targetsPath())} ${dim("— after you change target.name, run")} ${cyan("feedback-loop targets remove " + entry.name)} ${dim("and")} ${cyan("targets add " + dir)}`);
+  } catch (error) {
+    warn(`not registered: ${error instanceof Error ? error.message : String(error)}`);
+  }
+  info(`Fill both in, then run ${cyan("feedback-loop report . --title \"…\" --dry-run")} — or, with Discord, ${cyan("feedback-loop intake --dry-run")}.`);
   return 0;
+}
+
+/** `targets list | add <dir> | remove <name>` */
+function targets(args: string[], positional: string[]): number {
+  const sub = positional[0] ?? "list";
+  switch (sub) {
+    case "list": {
+      const all = readTargets();
+      if (all.length === 0) {
+        info(`${dim("no targets registered in")} ${targetsPath()}`);
+        return 0;
+      }
+      for (const t of all) console.log(`  ${bold(t.name.padEnd(20))} ${t.path ?? dim("(no checkout)")}  ${dim(t.config)}`);
+      return 0;
+    }
+    case "add": {
+      const c = args.indexOf("--config");
+      const entry = addTarget(c >= 0 ? { configFile: args[c + 1] } : { repoPath: positional[1] ?? process.cwd() });
+      info(`${green("registered")} ${bold(entry.name)} ${dim(entry.config)}`);
+      return 0;
+    }
+    case "remove": {
+      const name = positional[1];
+      if (!name) {
+        fail("targets remove needs a name: feedback-loop targets remove my-app");
+        return 1;
+      }
+      const gone = removeTarget(name);
+      if (!gone) {
+        fail(`No target named "${name}". ${dim("feedback-loop targets list")}`);
+        return 1;
+      }
+      info(`${green("removed")} ${bold(gone.name)} ${dim("— its config and ~/.feedback-loop state are untouched")}`);
+      return 0;
+    }
+    default:
+      fail(`targets: unknown subcommand "${sub}" — list, add <dir>, or remove <name>.`);
+      return 1;
+  }
 }
 
 /** Fill in the detail on any request that arrived as a bare label. */
@@ -514,12 +667,17 @@ target:
   repo: owner/my-app           # GitHub repo that receives the issues and PRs
   baseBranch: dev              # PRs are opened against this, never master
 
+# OPTIONAL. Delete this block (or write \`discord: null\`) for a repo with no
+# chat channel: intake, reconcile and chat commands are then simply off, and
+# reports come in through \`feedback-loop report\` instead. labels, status, the
+# worker, handoff and the dashboard all work either way.
 discord:
   guildId: "000000000000000000"
   channelId: "000000000000000000"
   tokenFile: ~/.config/my-app/discord.env   # holds DISCORD_BOT_TOKEN=...
   ignoreAuthorIds: []          # bot ids whose messages should never be filed
   mentionTriggerIds: []        # mentioning these bypasses the confidence floor
+  operatorIds: []              # people allowed to start runs from chat; empty = nobody
 
 github:
   # tokenFile: .secrets/github-token   # omit to use the ambient \`gh\` login
@@ -542,6 +700,15 @@ worker:
   dailyBudgetUsd: 15
   maxFixAttempts: 2
   # denyPaths: omitted -> schema/migrations/auth/payments/CI/release are protected
+
+# Where this target's dashboard is served, for \`status --json\` to link to.
+# dashboard:
+#   url: http://localhost:7777
+
+# Optional. With this set, \`handoff\` and the dashboard link a handed-off
+# worktree straight into agentdeck.
+# agentdeck:
+#   url: http://localhost:7878
 `;
 
 const SAMPLE_PLAYBOOK = `# Playbook

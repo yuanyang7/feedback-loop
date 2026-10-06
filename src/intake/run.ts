@@ -1,4 +1,4 @@
-import { readSecret, requireRepo, type LoadedConfig } from "../core/config.js";
+import { readSecret, requireDiscord, requireRepo, type LoadedConfig } from "../core/config.js";
 import { bold, cyan, dim, info, warn, yellow } from "../core/log.js";
 import { makeClassifier } from "../core/llm.js";
 import { appendRunLog, readIntakeState, writeIntakeState } from "../core/state.js";
@@ -34,7 +34,15 @@ export async function runIntake(loaded: LoadedConfig, opts: IntakeOptions): Prom
   const { config } = loaded;
   const target = config.target.name;
 
-  const discord = new DiscordClient(readSecret(config.discord.tokenFile, "DISCORD_BOT_TOKEN"));
+  // No chat, nothing to take in. Reports for such a target arrive through
+  // `report`, and there is no cursor to advance and nobody to answer.
+  const chat = config.discord;
+  if (!chat) {
+    info(`${dim("intake skipped —")} ${target} has no discord section.`);
+    return;
+  }
+
+  const discord = new DiscordClient(readSecret(chat.tokenFile, "DISCORD_BOT_TOKEN"));
   const github = new GitHubClient(
     config.target.repo,
     config.github.tokenFile ? readSecret(config.github.tokenFile, "GITHUB_TOKEN") : undefined,
@@ -50,7 +58,7 @@ export async function runIntake(loaded: LoadedConfig, opts: IntakeOptions): Prom
   // First run: adopt the newest message as the cursor rather than filing the
   // entire channel history as issues. --backfill opts into some history.
   if (cursor === null && opts.backfill === 0) {
-    const recent = await discord.fetchMessages(config.discord.channelId, null, 1);
+    const recent = await discord.fetchMessages(chat.channelId, null, 1);
     const newest = recent.at(-1);
     if (!opts.dryRun) {
       writeIntakeState(target, { cursor: newest?.id ?? null, lastTickAt: new Date().toISOString() });
@@ -65,7 +73,7 @@ export async function runIntake(loaded: LoadedConfig, opts: IntakeOptions): Prom
 
   // Discord rejects limit=0, which a bare --backfill 0 would otherwise produce.
   const limit = Math.max(1, cursor === null ? Math.min(opts.backfill, 100) : config.intake.lookbackLimit);
-  const messages = await discord.fetchMessages(config.discord.channelId, cursor, limit);
+  const messages = await discord.fetchMessages(chat.channelId, cursor, limit);
   if (messages.length === 0) {
     info("No new messages.");
     if (!opts.dryRun) writeIntakeState(target, { cursor, lastTickAt: new Date().toISOString() });
@@ -78,8 +86,8 @@ export async function runIntake(loaded: LoadedConfig, opts: IntakeOptions): Prom
   const remaining = await handleCommands(loaded, discord, messages, opts.dryRun, undefined, true, opts.role ?? "all");
 
   const reports = attachReplyLinks(target, groupMessages(remaining, {
-    ignoreAuthorIds: config.discord.ignoreAuthorIds,
-    mentionTriggerIds: config.discord.mentionTriggerIds,
+    ignoreAuthorIds: chat.ignoreAuthorIds,
+    mentionTriggerIds: chat.mentionTriggerIds,
   }));
   info(`${messages.length} new message(s) -> ${reports.length} candidate report(s).`);
   if (reports.length === 0) {
@@ -89,7 +97,7 @@ export async function runIntake(loaded: LoadedConfig, opts: IntakeOptions): Prom
     return;
   }
 
-  const channelName = await discord.channelName(config.discord.channelId);
+  const channelName = await discord.channelName(chat.channelId);
   const openIssues = await github.listIssues({ state: "open", limit: 200 });
   const classifier = makeClassifier(config.intake.backend, config.intake.model, config.intake.effort);
   const { decisions, costUsd } = await classifyReports(reports, openIssues, classifier);
@@ -104,7 +112,7 @@ export async function runIntake(loaded: LoadedConfig, opts: IntakeOptions): Prom
   for (const decision of decisions) {
     const report = reports[decision.index]!;
     const anchor = anchorOf(report);
-    const link = messageUrl(config.discord.guildId, config.discord.channelId, anchor.id);
+    const link = messageUrl(chat.guildId, chat.channelId, anchor.id);
     const label = `${dim(`#${decision.index}`)} ${report.authorName}: ${decision.kind} ${dim(`(${decision.confidence.toFixed(2)})`)}`;
 
     if (decision.kind === "noise" || decision.kind === "question") {
@@ -133,8 +141,8 @@ export async function runIntake(loaded: LoadedConfig, opts: IntakeOptions): Prom
         // should go — leaving it would keep the issue out of every queue on the
         // strength of a question that has been answered.
         await github.removeLabels(decision.clarifies, [config.github.labels.needsInfo]).catch(() => undefined);
-        await setState(discord, config.discord.channelId, anchor.id, "logged").catch(() => undefined);
-        recordStatus(target, decision.clarifies, { channel: config.discord.channelId });
+        await setState(discord, chat.channelId, anchor.id, "logged").catch(() => undefined);
+        recordStatus(target, decision.clarifies, { channel: chat.channelId });
       }
       continue;
     }
@@ -171,7 +179,7 @@ export async function runIntake(loaded: LoadedConfig, opts: IntakeOptions): Prom
             existing.number,
             `Also reported by **${report.authorName}** in Discord: ${link}\n\n> ${renderReport(report).replace(/\n/g, "\n> ")}`,
           );
-          await setState(discord, config.discord.channelId, anchor.id, "duplicate");
+          await setState(discord, chat.channelId, anchor.id, "duplicate");
           await replyWithIssue(
             loaded, discord, anchor.id,
             `Already tracked — ${issueLink(config.target.repo, existing.number)} · ${existing.title}`,
@@ -183,8 +191,8 @@ export async function runIntake(loaded: LoadedConfig, opts: IntakeOptions): Prom
     }
 
     const body = issueBody(decision, report, {
-      guildId: config.discord.guildId,
-      channelId: config.discord.channelId,
+      guildId: chat.guildId,
+      channelId: chat.channelId,
       channelName,
       related,
       lowConfidence: lowConfidence ? decision.reasoning : undefined,
@@ -228,10 +236,10 @@ export async function runIntake(loaded: LoadedConfig, opts: IntakeOptions): Prom
     }
     // Keep the question mark on a thin report: it is filed, but the reporter is
     // the only one who can make it actionable.
-    await setState(discord, config.discord.channelId, anchor.id, lowConfidence ? "unclear" : "logged");
+    await setState(discord, chat.channelId, anchor.id, lowConfidence ? "unclear" : "logged");
     recordStatus(target, number, {
       state: lowConfidence ? "unclear" : "logged",
-      channel: config.discord.channelId,
+      channel: chat.channelId,
       anchor: anchor.id,
       title,
     });
@@ -270,12 +278,13 @@ async function handleCommands(
   discord: DiscordClient,
   messages: DiscordMessage[],
   dryRun: boolean,
-  channel: string = loaded.config.discord.channelId,
+  channel: string = requireDiscord(loaded.config).channelId,
   requireMention = true,
   role: "all" | "intake" = "all",
 ): Promise<DiscordMessage[]> {
   const { config } = loaded;
-  const botIds = config.discord.mentionTriggerIds;
+  const chat = requireDiscord(config);
+  const botIds = chat.mentionTriggerIds;
   const remaining: DiscordMessage[] = [];
 
   for (const message of messages) {
@@ -290,7 +299,7 @@ async function handleCommands(
       if (!dryRun) await discord.sendMessage(channel, text, message.id).catch(() => undefined);
     };
 
-    if (!isOperator(message, config.discord.operatorIds)) {
+    if (!isOperator(message, chat.operatorIds)) {
       warn(`command "${command.kind}" from non-operator ${message.author.username} — refused`);
       await reply(`Sorry ${message.author.username}, you're not on the operator list for this repo.`);
       continue;
@@ -534,9 +543,10 @@ async function replyWithIssue(
   text: string,
   issue?: number,
 ): Promise<void> {
-  if (!loaded.config.discord.replyWithIssue) return;
+  const chat = requireDiscord(loaded.config);
+  if (!chat.replyWithIssue) return;
   const sent = await discord
-    .sendMessage(loaded.config.discord.channelId, text, messageId)
+    .sendMessage(chat.channelId, text, messageId)
     .catch(() => null); // a failed reply must not cost us the filed issue
   // Remembered so reconcile can rewrite it later. Without this the reply keeps
   // saying "filed" long after the work shipped, and nothing knows it is there.
@@ -552,7 +562,7 @@ async function pollCommandChannels(
   dryRun: boolean,
   role: "all" | "intake" = "all",
 ): Promise<void> {
-  const channels = loaded.config.discord.commandChannelIds;
+  const channels = requireDiscord(loaded.config).commandChannelIds;
   if (channels.length === 0) return;
 
   const cursors = { ...(state.commandCursors ?? {}) };

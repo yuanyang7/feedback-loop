@@ -122,7 +122,7 @@ export async function pickUpWork(
     return;
   }
 
-  const channel = config.discord.channelId;
+  const channel = config.discord?.channelId ?? "";
   const message = await postOpening(loaded, channel, next);
   if (message) recordStatus(target, next.number, { botMessage: message, channel });
   const { pid } = startWorker(target, repoPath, { kind: "go", issue: next.number }, channel, message);
@@ -180,7 +180,7 @@ export async function promoteAutoWork(loaded: LoadedConfig, dryRun: boolean): Pr
     return;
   }
 
-  const channel = config.discord.channelId;
+  const channel = config.discord?.channelId ?? "";
   // Announce once. If the queue write below fails — a GitHub 5xx is exactly
   // what the tick's error handling exists for — the next tick picks the same
   // issue again, and without this it would post a second "picked up" line
@@ -292,7 +292,7 @@ export async function adoptBareRequests(
       info(`  ${dim(`[dry-run] would adopt hand-labelled #${request.issue}`)}`);
       continue;
     }
-    const channel = config.discord.channelId;
+    const channel = config.discord?.channelId ?? "";
     const message = await postOpening(loaded, channel, issue);
     if (message) recordStatus(config.target.name, issue.number, { botMessage: message, channel });
     await recordAsk(github, { issue: issue.number, kind: "go", channel, message, by: "label" });
@@ -397,10 +397,12 @@ async function postOpening(
   channel: string,
   issue: Issue,
 ): Promise<string | null> {
+  // A target without Discord has no channel to open in; the run reports on
+  // the issue alone, and `channel` is "" the way a dashboard-started run's is.
+  const chat = loaded.config.discord;
+  if (!chat || !channel) return null;
   const { DiscordClient } = await import("../intake/discord.js");
-  const discord = new DiscordClient(
-    readSecret(loaded.config.discord.tokenFile, "DISCORD_BOT_TOKEN"),
-  );
+  const discord = new DiscordClient(readSecret(chat.tokenFile, "DISCORD_BOT_TOKEN"));
   return discord
     .sendMessage(channel, `⏳ Picked up #${issue.number} — ${issue.title}\nI'll update this message as it goes.`)
     .catch(() => null);

@@ -18,7 +18,7 @@ import { stateDir } from "../core/state.js";
 import { claimRun, concurrencyRefusal, startWorker } from "../intake/commands.js";
 import { GitHubClient } from "../intake/github.js";
 import { gateRefusal, openGate } from "../intake/run.js";
-import { handBackFromChat, handOffFromChat } from "../worker/handoff.js";
+import { agentdeckLink, handBackFromChat, handOffFromChat } from "../worker/handoff.js";
 import { enqueueRequest } from "../worker/queue.js";
 import { decisionComment } from "../core/decisions.js";
 
@@ -174,6 +174,8 @@ export interface HandoffInfo {
   prompt: string;
   /** The same, as one line for a terminal. */
   command: string;
+  /** Opens the worktree in agentdeck, when the config names one. */
+  agentdeck: string | null;
 }
 
 /**
@@ -209,5 +211,9 @@ export function handoffInfo(loaded: LoadedConfig, issue: number): HandoffInfo | 
     "Then follow the repo's AGENTS.md workflow to fix it and ship a PR.",
   ].join("\n");
   const quote = (s: string): string => `'${s.replace(/'/g, `'\\''`)}'`;
-  return { issue, path: dir, branch, prompt, command: `cd ${quote(dir)} && claude ${quote(prompt)}` };
+  return {
+    issue, path: dir, branch, prompt,
+    command: `cd ${quote(dir)} && claude ${quote(prompt)}`,
+    agentdeck: agentdeckLink(loaded.config, dir),
+  };
 }
